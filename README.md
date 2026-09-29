@@ -18,7 +18,7 @@ Amounts are today's rupees.
 
 ## What the report does
 
-Each year from the plan start through life expectancy, assets grow, income is added, loans are paid, and goals are spent at their inflated cost. Contingency is filled only during the build period, from that year's savings, and does not earn a return. Safety-shield goals are paid from it first. Spending otherwise comes from liquid assets. A gap is a shortfall.
+Each year from the plan start through life expectancy, assets grow, income is added, loans are paid, and goals are spent at their inflated cost. Contingency is refilled from savings up to several months of that year's recurring costs, and the balance earns a short-term return so it keeps moving. It pays safety-shield goals when income does not cover them. Other spending comes from liquid assets. A gap is a shortfall.
 
 The report shows whether the plan stays funded, the earliest retirement age that still funds it, final and peak net worth, interest paid, amount invested, and the contingency balance.
 

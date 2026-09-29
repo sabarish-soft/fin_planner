@@ -28,6 +28,8 @@
   header { padding: 28px 0 8px; }
   h1 { font-family: Palatino, "Palatino Linotype", serif; font-weight: 600; font-size: 32px; margin: 0 0 4px; }
   h2 { font-family: Palatino, "Palatino Linotype", serif; font-size: 22px; margin: 0 0 12px; }
+  h3 { font-size: 15px; margin: 14px 0 4px; font-weight: 600; }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
   p.lead { color: var(--muted); margin: 0; }
   .bar, .row, .actions, .presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .bar { justify-content: space-between; margin: 18px 0; }
@@ -194,7 +196,7 @@
     for (let i = 0; i < years; i++) cost *= 1 + rate;
     return cost;
   }
-  function draw(state, amount) {
+  function draw(state, amount, spendLocked) {
     let left = amount;
     const fromSurplus = Math.min(Math.max(0, state.surplus), left);
     state.surplus -= fromSurplus;
@@ -205,6 +207,14 @@
       asset.amount -= take;
       left -= take;
     });
+    if (spendLocked) {
+      state.assets.forEach(function (asset) {
+        if (asset.liquid || left <= 0) return;
+        const take = Math.min(Math.max(0, asset.amount), left);
+        asset.amount -= take;
+        left -= take;
+      });
+    }
     return amount - left;
   }
   function service(state, loan) {
@@ -244,13 +254,13 @@
     const rows = [];
     let interestPaid = 0;
     let totalInvested = 0;
-    const buildYears = Math.ceil((Number(plan.buildPeriodMonths) || 0) / 12);
     for (let year = startYear; year <= endYear; year++) {
       const avg = state.assets.length
         ? state.assets.reduce(function (sum, asset) { return sum + asset.growth; }, 0) / state.assets.length
         : 0;
       state.assets.forEach(function (asset) { asset.amount *= 1 + asset.growth; });
       state.surplus *= 1 + avg;
+      state.contingency *= 1.04;
       state.assets.forEach(function (asset) {
         if (year >= yearOf(asset.rebalanceDate)) asset.liquid = true;
       });
@@ -273,18 +283,25 @@
       let goalSpending = 0;
       let goalCash = 0;
       const milestones = [];
+      let shieldedNeed = 0;
       (plan.goals || []).forEach(function (goal) {
+        if (!(goal.safetyShield && goal.kind === "recurring")) return;
+        const due = goalDates(plan, goal, year);
+        shieldedNeed += due.length * inflated(goal, plan, year);
+      });
+      let contingencyCover = income < shieldedNeed ? Math.min(state.contingency, shieldedNeed - income) : 0;
+      (plan.goals || []).forEach(function (goal, goalIndex) {
         const dates = goalDates(plan, goal, year);
         if (!dates.length) return;
         const each = inflated(goal, plan, year);
-        milestones.push({ name: goal.name || "Goal", amount: dates.length * each, once: goal.kind === "once" });
+        milestones.push({ name: goal.name || "Goal", amount: dates.length * each, once: goal.kind === "once", index: goalIndex });
         dates.forEach(function () {
           let cost = each;
           if (goal.kind === "once" && goal.loan) {
             const downPct = Math.min(100, Math.max(0, Number(goal.loan.downPaymentPercent) || 0)) / 100;
             const down = cost * downPct;
             const borrowed = Math.max(0, cost - down);
-            const paidDown = draw(state, down);
+            const paidDown = draw(state, down, true);
             goalCash += paidDown;
             shortfall += down - paidDown;
             goalSpending += down;
@@ -306,13 +323,14 @@
             return;
           }
           let unpaid = 0;
-          if (goal.safetyShield && goal.kind === "recurring") {
-            const fromPot = Math.min(state.contingency, cost);
+          if (goal.safetyShield && goal.kind === "recurring" && contingencyCover > 0) {
+            const fromPot = Math.min(contingencyCover, cost);
             state.contingency -= fromPot;
+            contingencyCover -= fromPot;
             cost -= fromPot;
             goalSpending += fromPot;
           }
-          const paid = draw(state, cost);
+          const paid = draw(state, cost, goal.kind === "once");
           goalCash += paid;
           goalSpending += paid;
           unpaid = cost - paid;
@@ -328,7 +346,7 @@
         recurringCost += goalDates(plan, goal, year).length * inflated(goal, plan, year);
       });
       const target = (Number(plan.contingencyMonths) || 0) * (recurringCost / 12);
-      if (year - startYear < buildYears && state.contingency < target && savings > 0) {
+      if (state.contingency < target && savings > 0) {
         const moved = draw(state, Math.min(savings, target - state.contingency));
         state.contingency += moved;
         totalInvested += savings - moved;
@@ -600,6 +618,8 @@
       "</div><p class='meta'>The balance cannot be spent until the rebalance year.</p>";
   }
 
+  const goalColors = ["#f2d48a", "#ff8b7b", "#7eb6ff", "#c9a0ff", "#5ad0c8", "#f0a35e", "#e07ad4", "#b5d36a", "#ff9ec8", "#8fd0ff"];
+  function goalColor(index) { return goalColors[(Number(index) || 0) % goalColors.length]; }
   function chart(rows, lines, markGoals) {
     const w = 520, h = 200, pad = 28;
     const values = lines.flatMap(function (line) { return rows.map(line.get); });
@@ -618,23 +638,42 @@
     }).join("");
     const labels = rows.length ? "<text x='" + pad + "' y='" + (h - 8) + "' font-size='11' fill='#9aa6b4'>" + rows[0].year + "</text><text x='" + (w - pad) + "' y='" + (h - 8) + "' font-size='11' fill='#9aa6b4' text-anchor='end'>" + rows[rows.length - 1].year + "</text>" : "";
     const marks = markGoals ? rows.map(function (row, i) {
-      if (!row.milestones || !row.milestones.length) return "";
+      const once = (row.milestones || []).filter(function (m) { return m.once; });
+      if (!once.length) return "";
       const cx = x(i);
       const cy = y(lines[0].get(row));
-      const names = row.milestones.filter(function (m) { return m.once; }).map(function (m) { return m.name; });
-      const label = names.join(", ");
-      const text = label ? "<text x='" + cx.toFixed(1) + "' y='" + Math.max(12, cy - 10).toFixed(1) + "' font-size='10' fill='#f2d48a' text-anchor='middle'>" + esc(label.slice(0, 22)) + "</text>" : "";
-      return "<line x1='" + cx.toFixed(1) + "' x2='" + cx.toFixed(1) + "' y1='" + cy.toFixed(1) + "' y2='" + (h - pad) + "' stroke='#f2d48a' stroke-opacity='0.45' stroke-dasharray='3 3'/>" +
-        "<circle cx='" + cx.toFixed(1) + "' cy='" + cy.toFixed(1) + "' r='4.5' fill='#f2d48a' stroke='#10141a' stroke-width='1'/>" + text;
+      const lineColor = goalColor(once[0].index);
+      const dots = once.map(function (m, k) {
+        const color = goalColor(m.index);
+        const cyk = cy - k * 11;
+        const label = "<text x='" + (cx + 8).toFixed(1) + "' y='" + Math.max(12, cyk - 6).toFixed(1) + "' font-size='10' fill='" + color + "'>" + esc(String(m.name || "Goal").slice(0, 18)) + "</text>";
+        return "<circle cx='" + cx.toFixed(1) + "' cy='" + cyk.toFixed(1) + "' r='4.5' fill='" + color + "' stroke='#10141a' stroke-width='1'/>" + label;
+      }).join("");
+      return "<line x1='" + cx.toFixed(1) + "' x2='" + cx.toFixed(1) + "' y1='" + cy.toFixed(1) + "' y2='" + (h - pad) + "' stroke='" + lineColor + "' stroke-opacity='0.45' stroke-dasharray='3 3'/>" + dots;
     }).join("") : "";
-    const legend = lines.map(function (line) { return "<span style='color:" + line.color + "'>" + esc(line.name) + "</span>"; }).join(" · ") + (markGoals ? " · <span style='color:#f2d48a'>Goal paid from investments</span>" : "");
+    const seenGoal = {};
+    const onceLegend = [];
+    const recurLegend = [];
+    if (markGoals) {
+      rows.forEach(function (row) {
+        (row.milestones || []).forEach(function (m) {
+          if (seenGoal[m.index]) return;
+          seenGoal[m.index] = true;
+          const item = "<span style='color:" + goalColor(m.index) + "'>" + esc(m.name || "Goal") + "</span>";
+          (m.once ? onceLegend : recurLegend).push(item);
+        });
+      });
+    }
+    const legend = lines.map(function (line) { return "<span style='color:" + line.color + "'>" + esc(line.name) + "</span>"; }).join(" · ") +
+      (onceLegend.length ? "<br>One-time · " + onceLegend.join(" · ") : "") +
+      (recurLegend.length ? "<br>Recurring · " + recurLegend.join(" · ") : "");
     const series = lines.map(function (line) {
       return line.name.replace(/\|/g, "") + "|" + line.color + "|" + rows.map(function (row) { return Math.round(line.get(row)); }).join(",");
     }).join(";");
     const markData = [];
     rows.forEach(function (row, i) {
       (row.milestones || []).forEach(function (m) {
-        markData.push(i + "~" + String(m.name || "Goal").replace(/[~;]/g, " ") + "~" + Math.round(m.amount));
+        markData.push(i + "~" + String(m.name || "Goal").replace(/[~;]/g, " ") + "~" + Math.round(m.amount) + "~" + goalColor(m.index) + "~" + (m.once ? "1" : "0"));
       });
     });
     return "<div class='chart' data-years='" + rows.map(function (row) { return row.year; }).join(",") + "' data-ages='" + rows.map(function (row) { return row.age; }).join(",") + "' data-series='" + series + "' data-marks='" + markData.join(";") + "'><svg viewBox='0 0 " + w + " " + h + "' role='img'>" + paths + marks + "<line class='cursor' x1='0' x2='0' y1='" + pad + "' y2='" + (h - pad) + "' stroke='#e8eef5' stroke-opacity='0.35' visibility='hidden'/>" + labels + "</svg><div class='tip' hidden></div><p class='meta'>" + legend + "</p></div>";
@@ -657,7 +696,9 @@
       ["Total invested", inr(result.totalInvested)],
       ["Contingency at end", inr(result.contingencyEnd)]
     ].map(function (pair) { return "<div class='stat'><span class='meta'>" + pair[0] + "</span><b>" + pair[1] + "</b></div>"; }).join("");
-    const goalRows = plan.goals.map(function (goal) {
+    const onceRows = [];
+    const recurRows = [];
+    plan.goals.forEach(function (goal, index) {
       const firstYear = goal.kind === "once"
         ? yearOfSafe(plan.dateOfBirth) + Number(goal.targetAge)
         : yearOfSafe(plan.dateOfBirth) + Number(goal.startAge);
@@ -669,8 +710,11 @@
         return cost;
       })();
       const down = goal.loan ? inflatedCost * (Number(goal.loan.downPaymentPercent) || 0) / 100 : null;
-      return "<tr><td>" + esc(goal.name) + "</td><td>" + inr(goal.amountToday) + "</td><td>" + inr(inflatedCost) + "</td><td>" + (down == null ? "—" : inr(down)) + "</td><td>" + (result.funded ? "Funded" : "Shortfall") + "</td></tr>";
-    }).join("");
+      const name = "<td><span class='swatch' style='background:" + goalColor(index) + "'></span>" + esc(goal.name) + "</td>";
+      const cells = name + "<td>" + inr(goal.amountToday) + "</td><td>" + inr(inflatedCost) + "</td><td>" + (down == null ? "—" : inr(down)) + "</td><td>" + (result.funded ? "Funded" : "Shortfall") + "</td>";
+      if (goal.kind === "once") onceRows.push("<tr>" + cells + "</tr>");
+      else recurRows.push("<tr>" + cells + "<td>every " + esc(goal.every) + " " + esc(goal.unit) + "</td></tr>");
+    });
     const yearRows = result.rows.map(function (row) {
       return "<tr><td>" + row.age + "</td><td>" + row.year + "</td><td>" + inr(row.income) + "</td><td>" + inr(row.goalSpending) + "</td><td>" + inr(row.liabilityPayment) + "</td><td>" + inr(row.interest) + "</td><td>" + inr(row.contingency) + "</td><td>" + inr(row.shortfall) + "</td><td>" + inr(row.netWorth) + "</td></tr>";
     }).join("");
@@ -678,14 +722,16 @@
       listLine("Incomes", plan.incomes, function (row) { return esc(row.name) + " " + inr(row.amountToday); }) +
       listLine("Assets", plan.assets, function (row) { return esc(row.name) + " " + inr(row.amount); }) +
       listLine("Liabilities", plan.liabilities, function (row) { return esc(row.name) + " " + inr(row.principal); }) +
-      listLine("Goals", plan.goals, function (row) { return esc(row.name) + " " + inr(row.amountToday); });
+      listLine("One-time goals", plan.goals.filter(function (row) { return row.kind === "once"; }), function (row) { return esc(row.name) + " " + inr(row.amountToday); }) +
+      listLine("Recurring goals", plan.goals.filter(function (row) { return row.kind !== "once"; }), function (row) { return esc(row.name) + " " + inr(row.amountToday) + " every " + row.every + " " + row.unit; });
     return "<section class='card'><p class='" + (result.funded ? "ok" : "note") + "'>" + status + " " + earlyText + "</p><div class='cards'>" + cards + "</div>" +
       "<div class='chart-grid'>" +
       chart(result.rows, [{ name: "Net worth", color: "#3dbe86", get: function (r) { return r.netWorth; } }], true) +
       chart(result.rows, [{ name: "Assets", color: "#7eb6ff", get: function (r) { return r.assets; } }, { name: "Liabilities", color: "#e0a06a", get: function (r) { return r.liabilities; } }], true) +
       "</div>" +
       chart(result.rows, [{ name: "Contingency", color: "#3dbe86", get: function (r) { return r.contingency; } }]) +
-      "<h2>Goals</h2><table><thead><tr><th>Name</th><th>Today</th><th>Inflated at first due year</th><th>Down payment</th><th>Plan</th></tr></thead><tbody>" + (goalRows || "<tr><td colspan='5'>No goals</td></tr>") + "</tbody></table>" +
+      "<h2>One-time goals</h2><table><thead><tr><th>Name</th><th>Today</th><th>Inflated at due year</th><th>Down payment</th><th>Plan</th></tr></thead><tbody>" + (onceRows.join("") || "<tr><td colspan='5'>No one-time goals</td></tr>") + "</tbody></table>" +
+      "<h2>Recurring goals</h2><table><thead><tr><th>Name</th><th>Today</th><th>Inflated at first due year</th><th>Down payment</th><th>Plan</th><th>Repeats</th></tr></thead><tbody>" + (recurRows.join("") || "<tr><td colspan='6'>No recurring goals</td></tr>") + "</tbody></table>" +
       "<h2>Year by year</h2><details><summary>Show " + result.rows.length + " years</summary><table><thead><tr><th>Age</th><th>Year</th><th>Income</th><th>Goals</th><th>Loan payment</th><th>Interest</th><th>Contingency</th><th>Shortfall</th><th>Net worth</th></tr></thead><tbody>" + yearRows + "</tbody></table></details>" +
       "<h2>Inputs</h2>" + inputs + "</section>";
   }
@@ -715,7 +761,8 @@
       if (open) {
         return "<div class='editor'>" + editor(row, plan) + "<div class='actions'><button type='button' class='primary' data-action='save'>Save</button></div></div>";
       }
-      return "<div class='item'><div><strong>" + esc(row.name || "Untitled") + "</strong><span class='meta'>" + rowSummary(section, row, plan) + "</span></div><div class='row'>" + iconBtn("edit", section, row.id, pencil, "Edit") + iconBtn("remove", section, row.id, trash, "Delete") + "</div></div>";
+      const dot = section === "goals" ? "<span class='swatch' style='background:" + goalColor(plan.goals.indexOf(row)) + "'></span>" : "";
+      return "<div class='item'><div><strong>" + dot + esc(row.name || "Untitled") + "</strong><span class='meta'>" + rowSummary(section, row, plan) + "</span></div><div class='row'>" + iconBtn("edit", section, row.id, pencil, "Edit") + iconBtn("remove", section, row.id, trash, "Delete") + "</div></div>";
     }).join("");
   }
 
@@ -737,7 +784,8 @@
       "</div><p class='meta'>Age at plan start: " + ageNow(plan) + ". Amounts are today's rupees. Each year a goal's cost becomes last year's cost times one plus its inflation rate.</p></section>" +
       "<section class='card'><h2>Goals</h2><div class='presets'>" +
       button("preset", "retirement", "Retirement") + button("preset", "home", "Dream home") + button("preset", "education", "Child's education") + button("preset", "wedding", "Child's wedding") + button("preset", "car", "Car upgrade") + button("preset", "spend", "Monthly spend") + button("preset", "vacation", "Annual vacation") + button("preset", "custom", "Create custom") +
-      "</div>" + listBlock("goals", plan.goals, goalEditor, plan) + "</section>" +
+      "</div><h3>One-time</h3>" + listBlock("goals", plan.goals.filter(function (row) { return row.kind === "once"; }), goalEditor, plan) +
+      "<h3>Recurring</h3>" + listBlock("goals", plan.goals.filter(function (row) { return row.kind !== "once"; }), goalEditor, plan) + "</section>" +
       "<section class='card'><h2>Incomes</h2><div class='actions'><button type='button' data-action='add-income'>Add income</button></div>" + listBlock("incomes", plan.incomes, incomeEditor, plan) + "</section>" +
       "<section class='card'><h2>Liabilities</h2><div class='presets'><button type='button' data-action='add-loan' data-preset='home'>Home loan</button><button type='button' data-action='add-loan' data-preset='car'>Car loan</button><button type='button' data-action='add-loan' data-preset='custom'>Custom loan</button></div>" + listBlock("liabilities", plan.liabilities, liabilityEditor, plan) + "</section>" +
       "<section class='card'><h2>Assets</h2><div class='presets'><button type='button' data-action='add-asset' data-preset='liquid'>Current liquid net worth</button><button type='button' data-action='add-asset' data-preset='property'>Real estate to sell</button><button type='button' data-action='add-asset' data-preset='nps'>NPS/PF lumpsum</button><button type='button' data-action='add-asset' data-preset='fd'>FD maturity</button><button type='button' data-action='add-asset' data-preset='custom'>Custom asset</button></div>" + listBlock("assets", plan.assets, assetEditor, plan) + "</section>"
@@ -852,7 +900,8 @@
       return part.split("~")[0] === String(index);
     }).map(function (part) {
       const bits = part.split("~");
-      return esc(bits[1]) + " " + inr(bits[2] || 0) + " taken from investments";
+      const kind = bits[4] === "0" ? " · recurring" : "";
+      return "<span style='color:" + (bits[3] || "#f2d48a") + "'>" + esc(bits[1]) + " " + inr(bits[2] || 0) + kind + "</span>";
     });
     tip.innerHTML = "<b>" + years[index] + "</b> · age " + (ages[index] || "") + "<br>" + series.map(function (line) {
       return "<span style='color:" + line.color + "'>" + esc(line.name) + " " + inr(line.values[index] || 0) + "</span>";

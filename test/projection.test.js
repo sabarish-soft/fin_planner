@@ -80,10 +80,10 @@ const result = project(plan);
 near(result.rows[0].netWorth, 248000, "year 1 net worth");
 near(result.rows[0].contingency, 6000, "year 1 contingency");
 near(result.rows[0].shortfall, 0, "year 1 shortfall");
-near(result.rows[1].netWorth, 262100, "year 2 net worth");
-near(result.rows[1].contingency, 5000, "year 2 contingency");
-near(result.finalNetWorth, 262100, "final");
-near(result.peakNetWorth, 262100, "peak");
+near(result.rows[1].netWorth, 262340, "year 2 net worth");
+near(result.rows[1].contingency, 5240, "year 2 contingency");
+near(result.finalNetWorth, 262340, "final");
+near(result.peakNetWorth, 262340, "peak");
 assert(result.peakAge === 41, "peak age");
 near(result.interestPaid, 0, "interest");
 near(result.totalInvested, 82000, "invested");
@@ -147,8 +147,8 @@ const short = project({
   liabilities: [],
   goals: [{ kind: "once", amountToday: 100, inflation: 0, targetAge: 40 }],
 });
-near(short.rows[0].shortfall, 100, "shortfall leaves illiquid asset");
-near(short.rows[0].netWorth, 1000, "illiquid still counts");
+near(short.rows[0].shortfall, 0, "one-time goal is paid from locked savings");
+near(short.rows[0].netWorth, 900, "one-time goal reduces wealth");
 
 const rising = project({
   dateOfBirth: "1980-01-01",
@@ -183,7 +183,40 @@ const spent = project({
 near(spent.rows[0].assets, 100000, "assets before the goal year");
 near(spent.rows[1].assets, 89000, "inflated goal comes out of assets");
 near(spent.rows[1].netWorth, 89000, "net worth after the goal");
-assert(spent.rows[1].milestones.length === 1 && spent.rows[1].milestones[0].name === "Home", "goal milestone");
+assert(spent.rows[1].milestones.length === 1 && spent.rows[1].milestones[0].name === "Home" && spent.rows[1].milestones[0].index === 0, "goal milestone");
 near(spent.rows[1].milestones[0].amount, 11000, "milestone uses inflated cost");
+
+const pot = project({
+  dateOfBirth: "1980-01-01",
+  lifeExpectancyAge: 42,
+  retirementAge: 50,
+  planStartDate: "2020-01-01",
+  contingencyMonths: 12,
+  buildPeriodMonths: 12,
+  inflation: 0,
+  incomes: [{ kind: "recurring", amountToday: 200000, every: 1, unit: "year", startDate: "2020-01-01", endDate: "2022-01-01", growthStart: 0, growthEnd: 0 }],
+  assets: [],
+  liabilities: [],
+  goals: [{ kind: "recurring", amountToday: 1000, inflation: 0, startAge: 40, endAge: 42, every: 1, unit: "month", safetyShield: true }]
+});
+assert(pot.rows[1].contingency > pot.rows[0].contingency, "contingency rises after it is funded");
+assert(pot.rows[2].contingency > pot.rows[1].contingency, "contingency keeps moving");
+
+const wedding = project({
+  dateOfBirth: "1980-01-01",
+  lifeExpectancyAge: 41,
+  retirementAge: 50,
+  planStartDate: "2020-01-01",
+  contingencyMonths: 0,
+  buildPeriodMonths: 0,
+  inflation: 0,
+  incomes: [],
+  assets: [{ amount: 100000, growth: 0, rebalanceDate: "2030-01-01" }],
+  liabilities: [],
+  goals: [{ name: "Child's wedding", kind: "once", amountToday: 25000, inflation: 0, targetAge: 40 }]
+});
+near(wedding.rows[0].netWorth, 75000, "wedding is removed from wealth");
+near(wedding.rows[0].assets, 75000, "wedding is removed from investments");
+assert(!wedding.rows[0].shortfall, "locked savings can pay the wedding");
 
 console.log("projection tests passed");
