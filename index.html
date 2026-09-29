@@ -6,15 +6,16 @@
 <title>Wealth plan</title>
 <style>
   :root {
-    --paper: #f3efe4;
-    --card: #fffdf8;
-    --ink: #1b2430;
-    --muted: #5c6570;
-    --line: #ddd4c4;
-    --green: #1d6b48;
-    --green-soft: #e5f2eb;
-    --warn: #8d4e16;
-    --warn-soft: #f8ead8;
+    --paper: #10141a;
+    --card: #1a212b;
+    --ink: #e8eef5;
+    --muted: #9aa6b4;
+    --line: #2e3846;
+    --green: #3dbe86;
+    --green-soft: #143328;
+    --warn: #e0a06a;
+    --warn-soft: #3a2a1c;
+    --field: #0e1319;
   }
   * { box-sizing: border-box; }
   body {
@@ -52,8 +53,13 @@
   }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
   label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
-  input, select { font: inherit; color: var(--ink); padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: white; }
-  .item { border-top: 1px solid var(--line); padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+  input, select { font: inherit; color: var(--ink); padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); }
+  .item { border-top: 1px solid var(--line); padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+  button.icon { width: 34px; height: 34px; padding: 6px; background: transparent; display: inline-flex; align-items: center; justify-content: center; }
+  button.icon svg { width: 16px; height: 16px; }
+  .editor { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 0 0 10px; background: #141b24; }
+  .chart { position: relative; }
+  .tip { position: absolute; z-index: 2; pointer-events: none; background: #0e1319; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--ink); min-width: 140px; }
   .item strong { display: block; }
   .meta { color: var(--muted); font-size: 13px; }
   .note { background: var(--warn-soft); color: var(--warn); padding: 8px 10px; border-radius: 8px; margin: 8px 0; }
@@ -69,7 +75,9 @@
   @media (min-width: 800px) { .chart-grid { grid-template-columns: 1fr 1fr; } }
   .check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
   @media print {
-    body { background: white; }
+    body { background: white; color: #1b2430; }
+    .card, .editor, .stat { background: white; color: #1b2430; }
+    input, select, button { color: #1b2430; background: white; }
     .noprint { display: none !important; }
     header, main { width: auto; }
     .card { break-inside: avoid; }
@@ -175,10 +183,16 @@
     const end = birthday(plan.dateOfBirth, goal.endAge);
     return scheduleDates(start, goal.every, goal.unit, start, end, year);
   }
+  function inflationRate(goal, plan) {
+    if (goal && goal.inflation != null && goal.inflation !== "") return Number(goal.inflation) || 0;
+    return Number(plan.inflation) || 0;
+  }
   function inflated(goal, plan, year) {
-    const rate = goal.inflation == null ? Number(plan.inflation) || 0 : Number(goal.inflation) || 0;
+    const rate = inflationRate(goal, plan);
     const years = year - yearOf(plan.planStartDate);
-    return (Number(goal.amountToday) || 0) * Math.pow(1 + rate, years);
+    let cost = Number(goal.amountToday) || 0;
+    for (let i = 0; i < years; i++) cost *= 1 + rate;
+    return cost;
   }
   function draw(state, amount) {
     let left = amount;
@@ -258,10 +272,12 @@
       });
       let goalSpending = 0;
       let goalCash = 0;
+      const milestones = [];
       (plan.goals || []).forEach(function (goal) {
         const dates = goalDates(plan, goal, year);
         if (!dates.length) return;
         const each = inflated(goal, plan, year);
+        milestones.push({ name: goal.name || "Goal", amount: dates.length * each, once: goal.kind === "once" });
         dates.forEach(function () {
           let cost = each;
           if (goal.kind === "once" && goal.loan) {
@@ -333,7 +349,8 @@
         shortfall: shortfall,
         netWorth: netWorth,
         assets: assetSum + state.surplus + state.contingency,
-        liabilities: debt
+        liabilities: debt,
+        milestones: milestones
       });
     }
     let peak = rows[0] || { netWorth: 0, age: null };
@@ -414,6 +431,7 @@
   let activeId = null;
   let view = "edit";
   let profileMsg = "";
+  let editing = null;
   try {
     plans = JSON.parse(localStorage.getItem(KEY) || "[]");
     if (!Array.isArray(plans) || !plans.length) plans = [blankPlan()];
@@ -449,6 +467,7 @@
       loan: null
     }, partial);
     plan.goals.push(row);
+    editing = { section: "goals", id: row.id };
     save();
     render();
   }
@@ -470,7 +489,9 @@
   }
   function addIncome() {
     const plan = active();
-    plan.incomes.push({ id: uid(), name: "Income", kind: "recurring", amountToday: 0, every: 1, unit: "month", startDate: plan.planStartDate, endDate: null, growthStart: 0, growthEnd: 0 });
+    const row = { id: uid(), name: "Income", kind: "recurring", amountToday: 0, every: 1, unit: "month", startDate: plan.planStartDate, endDate: null, growthStart: 0, growthEnd: 0 };
+    plan.incomes.push(row);
+    editing = { section: "incomes", id: row.id };
     save();
     render();
   }
@@ -482,7 +503,9 @@
       d.setFullYear(d.getFullYear() + n);
       return localISO(d);
     }
-    plan.liabilities.push(Object.assign({ id: uid(), name: "Loan", principal: 0, endDate: "", annualRate: 0.12 }, partial && partial.endYears ? { name: partial.name, annualRate: partial.annualRate, endDate: plusYears(partial.endYears), principal: 0 } : partial));
+    const row = Object.assign({ id: uid(), name: "Loan", principal: 0, endDate: "", annualRate: 0.12 }, partial && partial.endYears ? { name: partial.name, annualRate: partial.annualRate, endDate: plusYears(partial.endYears), principal: 0 } : partial);
+    plan.liabilities.push(row);
+    editing = { section: "liabilities", id: row.id };
     save();
     render();
   }
@@ -499,14 +522,16 @@
     let rebalanceDate = plan.planStartDate;
     if (partial && partial.rebalance === "retire") rebalanceDate = localISO(retire);
     if (partial && partial.rebalanceYears) rebalanceDate = plusYears(partial.rebalanceYears);
-    plan.assets.push({
+    const row = {
       id: uid(),
       name: partial.name,
       category: partial.category,
       amount: 0,
       growth: partial.growth,
       rebalanceDate: rebalanceDate
-    });
+    };
+    plan.assets.push(row);
+    editing = { section: "assets", id: row.id };
     save();
     render();
   }
@@ -575,21 +600,44 @@
       "</div><p class='meta'>The balance cannot be spent until the rebalance year.</p>";
   }
 
-  function chart(rows, lines) {
-    const w = 520, h = 180, pad = 28;
+  function chart(rows, lines, markGoals) {
+    const w = 520, h = 200, pad = 28;
     const values = lines.flatMap(function (line) { return rows.map(line.get); });
     let min = Math.min(0, ...values);
     let max = Math.max(1, ...values);
     if (min === max) max = min + 1;
     function x(i) { return pad + (rows.length === 1 ? (w - pad * 2) / 2 : (i * (w - pad * 2)) / (rows.length - 1)); }
     function y(v) { return h - pad - ((v - min) / (max - min)) * (h - pad * 2); }
+    const base = y(Math.min(0, min));
     const paths = lines.map(function (line) {
-      const d = rows.map(function (row, i) { return (i ? "L" : "M") + x(i).toFixed(1) + " " + y(line.get(row)).toFixed(1); }).join(" ");
-      return "<path d='" + d + "' fill='none' stroke='" + line.color + "' stroke-width='2'/>";
+      const pts = rows.map(function (row, i) { return x(i).toFixed(1) + " " + y(line.get(row)).toFixed(1); });
+      const linePath = pts.map(function (p, i) { return (i ? "L" : "M") + p; }).join(" ");
+      const area = linePath + " L" + x(rows.length - 1).toFixed(1) + " " + base.toFixed(1) + " L" + x(0).toFixed(1) + " " + base.toFixed(1) + " Z";
+      return "<path d='" + area + "' fill='" + line.color + "' fill-opacity='0.28'/>" +
+        "<path d='" + linePath + "' fill='none' stroke='" + line.color + "' stroke-width='2'/>";
     }).join("");
-    const labels = rows.length ? "<text x='" + pad + "' y='" + (h - 8) + "' font-size='11' fill='#5c6570'>" + rows[0].year + "</text><text x='" + (w - pad) + "' y='" + (h - 8) + "' font-size='11' fill='#5c6570' text-anchor='end'>" + rows[rows.length - 1].year + "</text>" : "";
-    const legend = lines.map(function (line, i) { return "<span style='color:" + line.color + "'>" + esc(line.name) + "</span>"; }).join(" · ");
-    return "<div><svg viewBox='0 0 " + w + " " + h + "' role='img'>" + paths + labels + "</svg><p class='meta'>" + legend + "</p></div>";
+    const labels = rows.length ? "<text x='" + pad + "' y='" + (h - 8) + "' font-size='11' fill='#9aa6b4'>" + rows[0].year + "</text><text x='" + (w - pad) + "' y='" + (h - 8) + "' font-size='11' fill='#9aa6b4' text-anchor='end'>" + rows[rows.length - 1].year + "</text>" : "";
+    const marks = markGoals ? rows.map(function (row, i) {
+      if (!row.milestones || !row.milestones.length) return "";
+      const cx = x(i);
+      const cy = y(lines[0].get(row));
+      const names = row.milestones.filter(function (m) { return m.once; }).map(function (m) { return m.name; });
+      const label = names.join(", ");
+      const text = label ? "<text x='" + cx.toFixed(1) + "' y='" + Math.max(12, cy - 10).toFixed(1) + "' font-size='10' fill='#f2d48a' text-anchor='middle'>" + esc(label.slice(0, 22)) + "</text>" : "";
+      return "<line x1='" + cx.toFixed(1) + "' x2='" + cx.toFixed(1) + "' y1='" + cy.toFixed(1) + "' y2='" + (h - pad) + "' stroke='#f2d48a' stroke-opacity='0.45' stroke-dasharray='3 3'/>" +
+        "<circle cx='" + cx.toFixed(1) + "' cy='" + cy.toFixed(1) + "' r='4.5' fill='#f2d48a' stroke='#10141a' stroke-width='1'/>" + text;
+    }).join("") : "";
+    const legend = lines.map(function (line) { return "<span style='color:" + line.color + "'>" + esc(line.name) + "</span>"; }).join(" · ") + (markGoals ? " · <span style='color:#f2d48a'>Goal paid from investments</span>" : "");
+    const series = lines.map(function (line) {
+      return line.name.replace(/\|/g, "") + "|" + line.color + "|" + rows.map(function (row) { return Math.round(line.get(row)); }).join(",");
+    }).join(";");
+    const markData = [];
+    rows.forEach(function (row, i) {
+      (row.milestones || []).forEach(function (m) {
+        markData.push(i + "~" + String(m.name || "Goal").replace(/[~;]/g, " ") + "~" + Math.round(m.amount));
+      });
+    });
+    return "<div class='chart' data-years='" + rows.map(function (row) { return row.year; }).join(",") + "' data-ages='" + rows.map(function (row) { return row.age; }).join(",") + "' data-series='" + series + "' data-marks='" + markData.join(";") + "'><svg viewBox='0 0 " + w + " " + h + "' role='img'>" + paths + marks + "<line class='cursor' x1='0' x2='0' y1='" + pad + "' y2='" + (h - pad) + "' stroke='#e8eef5' stroke-opacity='0.35' visibility='hidden'/>" + labels + "</svg><div class='tip' hidden></div><p class='meta'>" + legend + "</p></div>";
   }
 
   function reportHTML(plan) {
@@ -614,9 +662,14 @@
         ? yearOfSafe(plan.dateOfBirth) + Number(goal.targetAge)
         : yearOfSafe(plan.dateOfBirth) + Number(goal.startAge);
       const years = Math.max(0, firstYear - yearOfSafe(plan.planStartDate));
-      const inflated = (Number(goal.amountToday) || 0) * Math.pow(1 + (Number(goal.inflation) || 0), years);
-      const down = goal.loan ? inflated * (Number(goal.loan.downPaymentPercent) || 0) / 100 : null;
-      return "<tr><td>" + esc(goal.name) + "</td><td>" + inr(goal.amountToday) + "</td><td>" + inr(inflated) + "</td><td>" + (down == null ? "—" : inr(down)) + "</td><td>" + (result.funded ? "Funded" : "Shortfall") + "</td></tr>";
+      const inflatedCost = (function () {
+        const rate = Number(goal.inflation == null ? plan.inflation : goal.inflation) || 0;
+        let cost = Number(goal.amountToday) || 0;
+        for (let i = 0; i < years; i++) cost *= 1 + rate;
+        return cost;
+      })();
+      const down = goal.loan ? inflatedCost * (Number(goal.loan.downPaymentPercent) || 0) / 100 : null;
+      return "<tr><td>" + esc(goal.name) + "</td><td>" + inr(goal.amountToday) + "</td><td>" + inr(inflatedCost) + "</td><td>" + (down == null ? "—" : inr(down)) + "</td><td>" + (result.funded ? "Funded" : "Shortfall") + "</td></tr>";
     }).join("");
     const yearRows = result.rows.map(function (row) {
       return "<tr><td>" + row.age + "</td><td>" + row.year + "</td><td>" + inr(row.income) + "</td><td>" + inr(row.goalSpending) + "</td><td>" + inr(row.liabilityPayment) + "</td><td>" + inr(row.interest) + "</td><td>" + inr(row.contingency) + "</td><td>" + inr(row.shortfall) + "</td><td>" + inr(row.netWorth) + "</td></tr>";
@@ -628,10 +681,10 @@
       listLine("Goals", plan.goals, function (row) { return esc(row.name) + " " + inr(row.amountToday); });
     return "<section class='card'><p class='" + (result.funded ? "ok" : "note") + "'>" + status + " " + earlyText + "</p><div class='cards'>" + cards + "</div>" +
       "<div class='chart-grid'>" +
-      chart(result.rows, [{ name: "Net worth", color: "#1d6b48", get: function (r) { return r.netWorth; } }]) +
-      chart(result.rows, [{ name: "Assets", color: "#1d6b48", get: function (r) { return r.assets; } }, { name: "Liabilities", color: "#8d4e16", get: function (r) { return r.liabilities; } }]) +
+      chart(result.rows, [{ name: "Net worth", color: "#3dbe86", get: function (r) { return r.netWorth; } }], true) +
+      chart(result.rows, [{ name: "Assets", color: "#7eb6ff", get: function (r) { return r.assets; } }, { name: "Liabilities", color: "#e0a06a", get: function (r) { return r.liabilities; } }], true) +
       "</div>" +
-      chart(result.rows, [{ name: "Contingency", color: "#1d6b48", get: function (r) { return r.contingency; } }]) +
+      chart(result.rows, [{ name: "Contingency", color: "#3dbe86", get: function (r) { return r.contingency; } }]) +
       "<h2>Goals</h2><table><thead><tr><th>Name</th><th>Today</th><th>Inflated at first due year</th><th>Down payment</th><th>Plan</th></tr></thead><tbody>" + (goalRows || "<tr><td colspan='5'>No goals</td></tr>") + "</tbody></table>" +
       "<h2>Year by year</h2><details><summary>Show " + result.rows.length + " years</summary><table><thead><tr><th>Age</th><th>Year</th><th>Income</th><th>Goals</th><th>Loan payment</th><th>Interest</th><th>Contingency</th><th>Shortfall</th><th>Net worth</th></tr></thead><tbody>" + yearRows + "</tbody></table></details>" +
       "<h2>Inputs</h2>" + inputs + "</section>";
@@ -641,16 +694,28 @@
     return "<p><b>" + title + ".</b> " + (rows.length ? rows.map(fmt).join("; ") : "None") + "</p>";
   }
 
-  function rowSummary(section, row) {
-    if (section === "goals") return inr(row.amountToday) + " · " + (row.kind === "once" ? "once at " + row.targetAge : "every " + row.every + " " + row.unit);
-    if (section === "incomes") return inr(row.amountToday) + " · " + row.kind;
-    if (section === "liabilities") return inr(row.principal) + " · " + ((Number(row.annualRate) || 0) * 100).toFixed(2) + "%";
+  const pencil = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M12 20h9'/><path d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/></svg>";
+  const trash = "<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'><path d='M3 6h18'/><path d='M8 6V4h8v2'/><path d='M19 6l-1 14H6L5 6'/></svg>";
+  function iconBtn(action, section, id, svg, label) {
+    return "<button type='button' class='icon' aria-label='" + label + "' data-action='" + action + "' data-section='" + section + "' data-id='" + id + "'>" + svg + "</button>";
+  }
+  function rowSummary(section, row, plan) {
+    if (section === "goals") {
+      const rate = (Number(row.inflation == null ? plan.inflation : row.inflation) || 0) * 100;
+      return inr(row.amountToday) + " today · " + rate.toFixed(2) + "% inflation each year · " + (row.kind === "once" ? "once at " + row.targetAge : "every " + row.every + " " + row.unit);
+    }
+    if (section === "incomes") return inr(row.amountToday) + " · " + row.kind + (row.endDate ? " until " + row.endDate : " until retirement");
+    if (section === "liabilities") return inr(row.principal) + " · " + ((Number(row.annualRate) || 0) * 100).toFixed(2) + "% · " + (row.endDate || "no end date");
     return inr(row.amount) + " · " + ((Number(row.growth) || 0) * 100).toFixed(2) + "% · " + esc(row.category);
   }
   function listBlock(section, rows, editor, plan) {
     if (!rows.length) return "<p class='meta'>None yet.</p>";
     return rows.map(function (row) {
-      return "<div class='item'><div><strong>" + esc(row.name || "Untitled") + "</strong><span class='meta'>" + rowSummary(section, row) + "</span></div><button type='button' class='warn' data-action='remove' data-section='" + section + "' data-id='" + row.id + "'>Remove</button></div>" + editor(row, plan);
+      const open = editing && editing.section === section && editing.id === row.id;
+      if (open) {
+        return "<div class='editor'>" + editor(row, plan) + "<div class='actions'><button type='button' class='primary' data-action='save'>Save</button></div></div>";
+      }
+      return "<div class='item'><div><strong>" + esc(row.name || "Untitled") + "</strong><span class='meta'>" + rowSummary(section, row, plan) + "</span></div><div class='row'>" + iconBtn("edit", section, row.id, pencil, "Edit") + iconBtn("remove", section, row.id, trash, "Delete") + "</div></div>";
     }).join("");
   }
 
@@ -669,7 +734,7 @@
       field("Contingency months", num("profile", "", "contingencyMonths", plan.contingencyMonths)) +
       field("Build period months", num("profile", "", "buildPeriodMonths", plan.buildPeriodMonths)) +
       field("Inflation %", num("profile", "", "inflation", plan.inflation, "percent")) +
-      "</div><p class='meta'>Age at plan start: " + ageNow(plan) + ". Amounts are today's rupees. Currency is INR.</p></section>" +
+      "</div><p class='meta'>Age at plan start: " + ageNow(plan) + ". Amounts are today's rupees. Each year a goal's cost becomes last year's cost times one plus its inflation rate.</p></section>" +
       "<section class='card'><h2>Goals</h2><div class='presets'>" +
       button("preset", "retirement", "Retirement") + button("preset", "home", "Dream home") + button("preset", "education", "Child's education") + button("preset", "wedding", "Child's wedding") + button("preset", "car", "Car upgrade") + button("preset", "spend", "Monthly spend") + button("preset", "vacation", "Annual vacation") + button("preset", "custom", "Create custom") +
       "</div>" + listBlock("goals", plan.goals, goalEditor, plan) + "</section>" +
@@ -714,6 +779,11 @@
         else render();
         return;
       }
+      if (bind === "inflation") {
+        plan.goals.forEach(function (goal) {
+          if (goal.inflation == null || Math.abs(Number(goal.inflation) - Number(plan.inflation)) < 1e-8) goal.inflation = value;
+        });
+      }
       plan[bind] = value;
       profileMsg = "";
       save();
@@ -753,6 +823,49 @@
     if (view === "report") render();
   }
 
+  document.getElementById("app").addEventListener("mousemove", function (event) {
+    const box = event.target.closest ? event.target.closest(".chart") : null;
+    document.querySelectorAll(".chart .tip").forEach(function (tip) {
+      if (!box || tip.parentElement !== box) tip.hidden = true;
+    });
+    document.querySelectorAll(".chart .cursor").forEach(function (line) {
+      if (!box || line.closest(".chart") !== box) line.setAttribute("visibility", "hidden");
+    });
+    if (!box) return;
+    const years = (box.dataset.years || "").split(",").filter(Boolean);
+    if (!years.length) return;
+    const svg = box.querySelector("svg");
+    const rect = svg.getBoundingClientRect();
+    const pad = 28;
+    const x = ((event.clientX - rect.left) / rect.width) * 520;
+    const inner = 520 - pad * 2;
+    let index = years.length === 1 ? 0 : Math.round(((x - pad) / inner) * (years.length - 1));
+    index = Math.max(0, Math.min(years.length - 1, index));
+    const ages = (box.dataset.ages || "").split(",");
+    const series = (box.dataset.series || "").split(";").filter(Boolean).map(function (part) {
+      const bits = part.split("|");
+      return { name: bits[0], color: bits[1], values: (bits[2] || "").split(",") };
+    });
+    const tip = box.querySelector(".tip");
+    tip.hidden = false;
+    const goalsDue = (box.dataset.marks || "").split(";").filter(Boolean).filter(function (part) {
+      return part.split("~")[0] === String(index);
+    }).map(function (part) {
+      const bits = part.split("~");
+      return esc(bits[1]) + " " + inr(bits[2] || 0) + " taken from investments";
+    });
+    tip.innerHTML = "<b>" + years[index] + "</b> · age " + (ages[index] || "") + "<br>" + series.map(function (line) {
+      return "<span style='color:" + line.color + "'>" + esc(line.name) + " " + inr(line.values[index] || 0) + "</span>";
+    }).join("<br>") + (goalsDue.length ? "<br>" + goalsDue.join("<br>") : "");
+    const left = event.clientX - rect.left + 12;
+    tip.style.left = Math.min(left, rect.width - 160) + "px";
+    tip.style.top = "8px";
+    const cursor = box.querySelector(".cursor");
+    const cx = pad + (years.length === 1 ? inner / 2 : (index * inner) / (years.length - 1));
+    cursor.setAttribute("x1", cx);
+    cursor.setAttribute("x2", cx);
+    cursor.setAttribute("visibility", "visible");
+  });
   document.getElementById("app").addEventListener("input", function (event) {
     if (event.target.dataset && event.target.dataset.bind) applyInput(event.target);
   });
@@ -851,8 +964,18 @@
       if (kind === "fd") addAsset({ name: "FD maturity", category: "Fixed Income", growth: 0.06, rebalanceYears: 1 });
       if (kind === "custom") addAsset({ name: "Custom asset", category: "Other", growth: 0.08, rebalance: "start" });
     }
+    if (action === "edit") {
+      editing = { section: btn.dataset.section, id: btn.dataset.id };
+      render();
+    }
+    if (action === "save") {
+      editing = null;
+      save();
+      render();
+    }
     if (action === "remove") {
       plan[btn.dataset.section] = plan[btn.dataset.section].filter(function (row) { return row.id !== btn.dataset.id; });
+      if (editing && editing.id === btn.dataset.id) editing = null;
       save();
       render();
     }

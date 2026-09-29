@@ -150,4 +150,40 @@ const short = project({
 near(short.rows[0].shortfall, 100, "shortfall leaves illiquid asset");
 near(short.rows[0].netWorth, 1000, "illiquid still counts");
 
+const rising = project({
+  dateOfBirth: "1980-01-01",
+  lifeExpectancyAge: 42,
+  retirementAge: 50,
+  planStartDate: "2020-01-01",
+  contingencyMonths: 0,
+  buildPeriodMonths: 0,
+  inflation: 0.1,
+  incomes: [{ kind: "recurring", amountToday: 100000, every: 1, unit: "year", startDate: "2020-01-01", endDate: "2022-01-01", growthStart: 0, growthEnd: 0 }],
+  assets: [],
+  liabilities: [],
+  goals: [{ kind: "recurring", amountToday: 1000, inflation: 0.1, startAge: 40, endAge: 42, every: 1, unit: "year", safetyShield: false }]
+});
+near(rising.rows[0].goalSpending, 1000, "cost in the start year");
+near(rising.rows[1].goalSpending, 1100, "cost after one inflation year");
+near(rising.rows[2].goalSpending, 1210, "cost after two inflation years");
+
+const spent = project({
+  dateOfBirth: "1980-01-01",
+  lifeExpectancyAge: 41,
+  retirementAge: 50,
+  planStartDate: "2020-01-01",
+  contingencyMonths: 0,
+  buildPeriodMonths: 0,
+  inflation: 0.1,
+  incomes: [],
+  assets: [{ amount: 100000, growth: 0, rebalanceDate: "2020-01-01" }],
+  liabilities: [],
+  goals: [{ name: "Home", kind: "once", amountToday: 10000, inflation: 0.1, targetAge: 41 }]
+});
+near(spent.rows[0].assets, 100000, "assets before the goal year");
+near(spent.rows[1].assets, 89000, "inflated goal comes out of assets");
+near(spent.rows[1].netWorth, 89000, "net worth after the goal");
+assert(spent.rows[1].milestones.length === 1 && spent.rows[1].milestones[0].name === "Home", "goal milestone");
+near(spent.rows[1].milestones[0].amount, 11000, "milestone uses inflated cost");
+
 console.log("projection tests passed");
