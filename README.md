@@ -1,8 +1,10 @@
 # Wealth plan
 
-A single-page retirement planner. Open `index.html` in a browser. There is no build step and no server.
+A retirement planner you can use in the browser.
 
-Plans stay in the browser. You can keep several, and the report updates as you edit. Export and import use a JSON file. Print / Save report uses the browser print dialog.
+**Open the app:** [https://sabarish-soft.github.io/fin_planner/](https://sabarish-soft.github.io/fin_planner/)
+
+Plans stay in your browser. Nothing is uploaded. You can keep several plans, export or import one as JSON, and print or save the report from the browser’s print dialog.
 
 ## What you enter
 
@@ -20,7 +22,7 @@ Each year from the plan start through life expectancy, assets grow, income is ad
 
 The report shows whether the plan stays funded, the earliest retirement age that still funds it, final and peak net worth, interest paid, amount invested, and the contingency balance.
 
-## Check the projection
+## Run the projection check
 
 ```bash
 node test/projection.test.js
