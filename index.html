@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wealth plan</title>
+<style>
+  :root {
+    --paper: #f3efe4;
+    --card: #fffdf8;
+    --ink: #1b2430;
+    --muted: #5c6570;
+    --line: #ddd4c4;
+    --green: #1d6b48;
+    --green-soft: #e5f2eb;
+    --warn: #8d4e16;
+    --warn-soft: #f8ead8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+  }
+  header, main { width: min(1100px, calc(100% - 32px)); margin: 0 auto; }
+  header { padding: 28px 0 8px; }
+  h1 { font-family: Palatino, "Palatino Linotype", serif; font-weight: 600; font-size: 32px; margin: 0 0 4px; }
+  h2 { font-family: Palatino, "Palatino Linotype", serif; font-size: 22px; margin: 0 0 12px; }
+  p.lead { color: var(--muted); margin: 0; }
+  .bar, .row, .actions, .presets { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .bar { justify-content: space-between; margin: 18px 0; }
+  button, select, .file {
+    background: var(--card);
+    color: var(--ink);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font: inherit;
+  }
+  button { cursor: pointer; }
+  button.primary { background: var(--green); color: white; border-color: var(--green); }
+  button.ghost { background: transparent; }
+  button.warn { color: var(--warn); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px 18px 18px;
+    margin: 0 0 14px;
+  }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input, select { font: inherit; color: var(--ink); padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: white; }
+  .item { border-top: 1px solid var(--line); padding: 10px 0; display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+  .item strong { display: block; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .note { background: var(--warn-soft); color: var(--warn); padding: 8px 10px; border-radius: 8px; margin: 8px 0; }
+  .ok { background: var(--green-soft); color: var(--green); padding: 10px 12px; border-radius: 8px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0; }
+  .stat { background: var(--paper); border-radius: 10px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  svg { width: 100%; height: auto; }
+  .chart-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 800px) { .chart-grid { grid-template-columns: 1fr 1fr; } }
+  .check { flex-direction: row; align-items: center; gap: 8px; color: var(--ink); }
+  @media print {
+    body { background: white; }
+    .noprint { display: none !important; }
+    header, main { width: auto; }
+    .card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Wealth plan</h1>
+  <p class="lead">Yearly retirement projection in rupees. It updates as you edit.</p>
+</header>
+<main id="app"></main>
+<script id="engine">
+(function () {
+  function yearOf(iso) { return Number(String(iso).slice(0, 4)); }
+  function isoOf(y, m, d) {
+    return String(y) + "-" + String(m).padStart(2, "0") + "-" + String(d).padStart(2, "0");
+  }
+  function addMonths(iso, n) {
+    const y0 = yearOf(iso);
+    const m0 = Number(iso.slice(5, 7));
+    const d0 = Number(iso.slice(8, 10));
+    const idx = y0 * 12 + (m0 - 1) + n;
+    const y = Math.floor(idx / 12);
+    const m = (idx % 12) + 1;
+    const dim = new Date(y, m, 0).getDate();
+    return isoOf(y, m, Math.min(d0, dim));
+  }
+  function addYears(iso, n) { return addMonths(iso, n * 12); }
+  function ageOn(dob, date) {
+    let age = yearOf(date) - yearOf(dob);
+    if (String(date).slice(5) < String(dob).slice(5)) age -= 1;
+    return age;
+  }
+  function birthday(dob, age) { return addYears(dob, Number(age)); }
+  function pmt(principal, rate, n) {
+    if (n <= 0 || principal <= 0) return 0;
+    if (!rate) return principal / n;
+    const grown = Math.pow(1 + rate, n);
+    return principal * rate * grown / (grown - 1);
+  }
+  function loanLength(plan, endDate) {
+    if (!endDate || endDate <= plan.planStartDate) return 0;
+    const n = yearOf(endDate) - yearOf(plan.planStartDate);
+    return n < 1 ? 1 : n;
+  }
+  function profileError(plan) {
+    if (!plan.dateOfBirth || !plan.planStartDate) return "Enter date of birth and plan start.";
+    const age = ageOn(plan.dateOfBirth, plan.planStartDate);
+    if (age < 0 || age > 120) return "Plan start must be on or after the date of birth.";
+    if (!(plan.lifeExpectancyAge > age) || plan.lifeExpectancyAge > 120) return "Life expectancy must be after the age at plan start.";
+    if (!(plan.retirementAge > age) || plan.retirementAge > plan.lifeExpectancyAge) return "Retirement age must be after the age at plan start and no later than life expectancy.";
+    return "";
+  }
+  function scheduleDates(start, every, unit, from, to, year) {
+    const step = Math.max(1, Number(every) || 1);
+    const dates = [];
+    let d = start;
+    let guard = 0;
+    while (yearOf(d) < year && guard++ < 20000) d = unit === "year" ? addYears(d, step) : addMonths(d, step);
+    while (yearOf(d) === year && guard++ < 20000) {
+      if (d >= from && d <= to) dates.push(d);
+      d = unit === "year" ? addYears(d, step) : addMonths(d, step);
+    }
+    return dates;
+  }
+  function lastIncomeYear(income, plan) {
+    if (income.endDate) return yearOf(income.endDate);
+    return yearOf(plan.dateOfBirth) + Number(plan.retirementAge) - 1;
+  }
+  function amountInYear(income, year, plan) {
+    if (income.kind === "once") return Number(income.amountToday) || 0;
+    const startY = yearOf(income.startDate);
+    const k = year - startY;
+    if (k <= 0) return Number(income.amountToday) || 0;
+    const span = Math.max(lastIncomeYear(income, plan) - startY, 1);
+    let amount = Number(income.amountToday) || 0;
+    const gs = Number(income.growthStart) || 0;
+    const ge = Number(income.growthEnd) || 0;
+    for (let i = 1; i <= k; i++) {
+      const t = span <= 1 ? 0 : (i - 1) / (span - 1);
+      amount *= 1 + gs + (ge - gs) * t;
+    }
+    return amount;
+  }
+  function incomeDates(income, plan, year) {
+    if (!income.startDate) return [];
+    if (income.kind === "once") {
+      return yearOf(income.startDate) === year ? [income.startDate] : [];
+    }
+    const end = income.endDate || "9999-12-31";
+    return scheduleDates(income.startDate, income.every, income.unit, income.startDate, end, year).filter(function (d) {
+      if (income.endDate) return d <= income.endDate;
+      return ageOn(plan.dateOfBirth, d) < Number(plan.retirementAge);
+    });
+  }
+  function goalDates(plan, goal, year) {
+    if (goal.kind === "once") {
+      if (yearOf(plan.dateOfBirth) + Number(goal.targetAge) !== year) return [];
+      return [birthday(plan.dateOfBirth, goal.targetAge)];
+    }
+    const start = birthday(plan.dateOfBirth, goal.startAge);
+    const end = birthday(plan.dateOfBirth, goal.endAge);
+    return scheduleDates(start, goal.every, goal.unit, start, end, year);
+  }
+  function inflated(goal, plan, year) {
+    const rate = goal.inflation == null ? Number(plan.inflation) || 0 : Number(goal.inflation) || 0;
+    const years = year - yearOf(plan.planStartDate);
+    return (Number(goal.amountToday) || 0) * Math.pow(1 + rate, years);
+  }
+  function draw(state, amount) {
+    let left = amount;
+    const fromSurplus = Math.min(Math.max(0, state.surplus), left);
+    state.surplus -= fromSurplus;
+    left -= fromSurplus;
+    state.assets.forEach(function (asset) {
+      if (!asset.liquid || left <= 0) return;
+      const take = Math.min(Math.max(0, asset.amount), left);
+      asset.amount -= take;
+      left -= take;
+    });
+    return amount - left;
+  }
+  function service(state, loan) {
+    if (loan.left <= 0 || loan.balance <= 0) return { interest: 0, paid: 0 };
+    const interest = loan.balance * loan.rate;
+    loan.balance += interest;
+    const due = loan.left === 1 ? loan.balance : Math.min(loan.payment, loan.balance);
+    const paid = draw(state, due);
+    loan.balance = Math.max(0, loan.balance - paid);
+    loan.left -= 1;
+    return { interest: interest, paid: paid, unpaid: due - paid };
+  }
+  function project(plan) {
+    const startYear = yearOf(plan.planStartDate);
+    const endYear = yearOf(plan.dateOfBirth) + Number(plan.lifeExpectancyAge);
+    const assets = (plan.assets || []).map(function (asset) {
+      return {
+        amount: Number(asset.amount) || 0,
+        growth: Number(asset.growth) || 0,
+        rebalanceDate: asset.rebalanceDate || plan.planStartDate,
+        liquid: yearOf(asset.rebalanceDate || plan.planStartDate) <= startYear
+      };
+    });
+    const loans = [];
+    (plan.liabilities || []).forEach(function (row) {
+      const n = loanLength(plan, row.endDate);
+      const principal = Number(row.principal) || 0;
+      if (!n || principal <= 0) return;
+      loans.push({
+        balance: principal,
+        rate: Number(row.annualRate) || 0,
+        payment: pmt(principal, Number(row.annualRate) || 0, n),
+        left: n
+      });
+    });
+    const state = { assets: assets, surplus: 0, contingency: 0, loans: loans };
+    const rows = [];
+    let interestPaid = 0;
+    let totalInvested = 0;
+    const buildYears = Math.ceil((Number(plan.buildPeriodMonths) || 0) / 12);
+    for (let year = startYear; year <= endYear; year++) {
+      const avg = state.assets.length
+        ? state.assets.reduce(function (sum, asset) { return sum + asset.growth; }, 0) / state.assets.length
+        : 0;
+      state.assets.forEach(function (asset) { asset.amount *= 1 + asset.growth; });
+      state.surplus *= 1 + avg;
+      state.assets.forEach(function (asset) {
+        if (year >= yearOf(asset.rebalanceDate)) asset.liquid = true;
+      });
+      let income = 0;
+      (plan.incomes || []).forEach(function (item) {
+        const dates = incomeDates(item, plan, year);
+        if (!dates.length) return;
+        income += dates.length * amountInYear(item, year, plan);
+      });
+      state.surplus += income;
+      let liabilityPayment = 0;
+      let interest = 0;
+      let shortfall = 0;
+      state.loans.forEach(function (loan) {
+        const step = service(state, loan);
+        interest += step.interest;
+        liabilityPayment += step.paid;
+        shortfall += step.unpaid;
+      });
+      let goalSpending = 0;
+      let goalCash = 0;
+      (plan.goals || []).forEach(function (goal) {
+        const dates = goalDates(plan, goal, year);
+        if (!dates.length) return;
+        const each = inflated(goal, plan, year);
+        dates.forEach(function () {
+          let cost = each;
+          if (goal.kind === "once" && goal.loan) {
+            const downPct = Math.min(100, Math.max(0, Number(goal.loan.downPaymentPercent) || 0)) / 100;
+            const down = cost * downPct;
+            const borrowed = Math.max(0, cost - down);
+            const paidDown = draw(state, down);
+            goalCash += paidDown;
+            shortfall += down - paidDown;
+            goalSpending += down;
+            const tenor = Math.max(1, Number(goal.loan.tenorYears) || 1);
+            const rate = Number(goal.loan.annualRate) || 0;
+            if (borrowed > 0) {
+              const created = {
+                balance: borrowed,
+                rate: rate,
+                payment: pmt(borrowed, rate, tenor),
+                left: tenor
+              };
+              state.loans.push(created);
+              const step = service(state, created);
+              interest += step.interest;
+              liabilityPayment += step.paid;
+              shortfall += step.unpaid;
+            }
+            return;
+          }
+          let unpaid = 0;
+          if (goal.safetyShield && goal.kind === "recurring") {
+            const fromPot = Math.min(state.contingency, cost);
+            state.contingency -= fromPot;
+            cost -= fromPot;
+            goalSpending += fromPot;
+          }
+          const paid = draw(state, cost);
+          goalCash += paid;
+          goalSpending += paid;
+          unpaid = cost - paid;
+          shortfall += unpaid;
+          goalSpending += unpaid;
+        });
+      });
+      const debt = state.loans.reduce(function (sum, loan) { return sum + loan.balance; }, 0);
+      const savings = Math.max(0, income - liabilityPayment - goalCash);
+      let recurringCost = 0;
+      (plan.goals || []).forEach(function (goal) {
+        if (goal.kind === "once") return;
+        recurringCost += goalDates(plan, goal, year).length * inflated(goal, plan, year);
+      });
+      const target = (Number(plan.contingencyMonths) || 0) * (recurringCost / 12);
+      if (year - startYear < buildYears && state.contingency < target && savings > 0) {
+        const moved = draw(state, Math.min(savings, target - state.contingency));
+        state.contingency += moved;
+        totalInvested += savings - moved;
+      } else {
+        totalInvested += savings;
+      }
+      interestPaid += interest;
+      const assetSum = state.assets.reduce(function (sum, asset) { return sum + asset.amount; }, 0);
+      const netWorth = assetSum + state.surplus + state.contingency - debt;
+      rows.push({
+        age: year - yearOf(plan.dateOfBirth),
+        year: year,
+        income: income,
+        goalSpending: goalSpending,
+        liabilityPayment: liabilityPayment,
+        interest: interest,
+        contingency: state.contingency,
+        shortfall: shortfall,
+        netWorth: netWorth,
+        assets: assetSum + state.surplus + state.contingency,
+        liabilities: debt
+      });
+    }
+    let peak = rows[0] || { netWorth: 0, age: null };
+    rows.forEach(function (row) { if (row.netWorth > peak.netWorth) peak = row; });
+    const shortRow = rows.find(function (row) { return row.shortfall > 0.5; });
+    return {
+      rows: rows,
+      funded: !shortRow,
+      firstShortfallAge: shortRow ? shortRow.age : null,
+      finalNetWorth: rows.length ? rows[rows.length - 1].netWorth : 0,
+      peakNetWorth: peak.netWorth,
+      peakAge: peak.age,
+      interestPaid: interestPaid,
+      totalInvested: totalInvested,
+      contingencyEnd: rows.length ? rows[rows.length - 1].contingency : 0,
+      unfunded: rows.reduce(function (sum, row) { return sum + row.shortfall; }, 0)
+    };
+  }
+  function earliestRetirementAge(plan) {
+    const startAge = ageOn(plan.dateOfBirth, plan.planStartDate);
+    let found = null;
+    for (let age = startAge + 1; age <= Number(plan.lifeExpectancyAge); age++) {
+      const trial = JSON.parse(JSON.stringify(plan));
+      trial.retirementAge = age;
+      if (project(trial).funded) return age;
+    }
+    return found;
+  }
+  globalThis.WealthPlan = {
+    project: project,
+    earliestRetirementAge: earliestRetirementAge,
+    profileError: profileError,
+    ageOn: ageOn,
+    loanLength: loanLength
+  };
+})();
+</script>
+<script>
+(function () {
+  const WP = globalThis.WealthPlan;
+  const KEY = "wealth-plans";
+  const ACTIVE = "wealth-plan-active";
+  const money = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 });
+  function inr(n) { return money.format(Math.round(Number(n) || 0)); }
+  function uid() { return Math.random().toString(36).slice(2, 10); }
+  function localISO(d) {
+    const z = function (n) { return String(n).padStart(2, "0"); };
+    return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+  }
+  function yearsAgo(n) {
+    const d = new Date();
+    d.setFullYear(d.getFullYear() - n);
+    return localISO(d);
+  }
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function blankPlan() {
+    return {
+      id: uid(),
+      name: "New plan",
+      dateOfBirth: yearsAgo(35),
+      lifeExpectancyAge: 85,
+      retirementAge: 60,
+      planStartDate: localISO(new Date()),
+      contingencyMonths: 6,
+      buildPeriodMonths: 12,
+      inflation: 0.065,
+      incomes: [],
+      assets: [],
+      liabilities: [],
+      goals: []
+    };
+  }
+  let plans = [];
+  let activeId = null;
+  let view = "edit";
+  let profileMsg = "";
+  try {
+    plans = JSON.parse(localStorage.getItem(KEY) || "[]");
+    if (!Array.isArray(plans) || !plans.length) plans = [blankPlan()];
+  } catch (e) {
+    plans = [blankPlan()];
+  }
+  activeId = localStorage.getItem(ACTIVE);
+  if (!plans.some(function (p) { return p.id === activeId; })) activeId = plans[0].id;
+
+  function active() { return plans.find(function (p) { return p.id === activeId; }) || plans[0]; }
+  function save() {
+    localStorage.setItem(KEY, JSON.stringify(plans));
+    localStorage.setItem(ACTIVE, activeId);
+  }
+  function ageNow(plan) { return WP.ageOn(plan.dateOfBirth, plan.planStartDate); }
+
+  function addGoal(partial) {
+    const plan = active();
+    const age = ageNow(plan);
+    const row = Object.assign({
+      id: uid(),
+      name: "Goal",
+      category: "Other",
+      kind: "once",
+      amountToday: 0,
+      inflation: plan.inflation,
+      targetAge: plan.retirementAge,
+      startAge: age,
+      endAge: plan.lifeExpectancyAge,
+      every: 1,
+      unit: "year",
+      safetyShield: false,
+      loan: null
+    }, partial);
+    plan.goals.push(row);
+    save();
+    render();
+  }
+  function presets() {
+    const plan = active();
+    const age = ageNow(plan);
+    return {
+      retirement: function () {
+        addGoal({ name: "Retirement spends", category: "Retirement Spends", kind: "recurring", amountToday: 100000, startAge: plan.retirementAge, endAge: plan.lifeExpectancyAge, every: 1, unit: "month", safetyShield: true, targetAge: null });
+      },
+      home: function () { addGoal({ name: "Dream home", category: "Home", kind: "once", amountToday: 15000000, targetAge: plan.retirementAge }); },
+      education: function () { addGoal({ name: "Child's education", category: "Education", kind: "once", amountToday: 5000000, targetAge: Math.min(plan.lifeExpectancyAge, age + 10) }); },
+      wedding: function () { addGoal({ name: "Child's wedding", category: "Wedding", kind: "once", amountToday: 2500000, targetAge: Math.min(plan.lifeExpectancyAge, age + 15) }); },
+      car: function () { addGoal({ name: "Car upgrade", category: "Car", kind: "recurring", amountToday: 1500000, startAge: age, endAge: plan.lifeExpectancyAge, every: 8, unit: "year", safetyShield: false }); },
+      spend: function () { addGoal({ name: "Monthly spend", category: "Other", kind: "recurring", amountToday: 50000, startAge: age, endAge: plan.retirementAge, every: 1, unit: "month" }); },
+      vacation: function () { addGoal({ name: "Annual vacation", category: "Vacation", kind: "recurring", amountToday: 300000, startAge: age, endAge: plan.lifeExpectancyAge, every: 1, unit: "year" }); },
+      custom: function () { addGoal({ name: "Custom goal" }); }
+    };
+  }
+  function addIncome() {
+    const plan = active();
+    plan.incomes.push({ id: uid(), name: "Income", kind: "recurring", amountToday: 0, every: 1, unit: "month", startDate: plan.planStartDate, endDate: null, growthStart: 0, growthEnd: 0 });
+    save();
+    render();
+  }
+  function addLiability(partial) {
+    const plan = active();
+    const start = new Date(plan.planStartDate + "T00:00:00");
+    function plusYears(n) {
+      const d = new Date(start.getTime());
+      d.setFullYear(d.getFullYear() + n);
+      return localISO(d);
+    }
+    plan.liabilities.push(Object.assign({ id: uid(), name: "Loan", principal: 0, endDate: "", annualRate: 0.12 }, partial && partial.endYears ? { name: partial.name, annualRate: partial.annualRate, endDate: plusYears(partial.endYears), principal: 0 } : partial));
+    save();
+    render();
+  }
+  function addAsset(partial) {
+    const plan = active();
+    const start = new Date(plan.planStartDate + "T00:00:00");
+    function plusYears(n) {
+      const d = new Date(start.getTime());
+      d.setFullYear(d.getFullYear() + n);
+      return localISO(d);
+    }
+    const retire = new Date(plan.dateOfBirth + "T00:00:00");
+    retire.setFullYear(retire.getFullYear() + Number(plan.retirementAge));
+    let rebalanceDate = plan.planStartDate;
+    if (partial && partial.rebalance === "retire") rebalanceDate = localISO(retire);
+    if (partial && partial.rebalanceYears) rebalanceDate = plusYears(partial.rebalanceYears);
+    plan.assets.push({
+      id: uid(),
+      name: partial.name,
+      category: partial.category,
+      amount: 0,
+      growth: partial.growth,
+      rebalanceDate: rebalanceDate
+    });
+    save();
+    render();
+  }
+
+  function field(label, html) { return "<label>" + esc(label) + html + "</label>"; }
+  function num(section, id, bind, value, scale) {
+    const shown = scale === "percent" ? (Number(value) || 0) * 100 : value;
+    return "<input data-section='" + section + "' data-id='" + esc(id) + "' data-bind='" + bind + "' data-scale='" + (scale || "") + "' type='number' step='any' value='" + esc(shown) + "'>";
+  }
+  function dateInput(section, id, bind, value) {
+    return "<input data-section='" + section + "' data-id='" + esc(id) + "' data-bind='" + bind + "' type='date' value='" + esc(value || "") + "'>";
+  }
+  function textInput(section, id, bind, value) {
+    return "<input data-section='" + section + "' data-id='" + esc(id) + "' data-bind='" + bind + "' value='" + esc(value || "") + "'>";
+  }
+  function selectInput(section, id, bind, value, options) {
+    return "<select data-section='" + section + "' data-id='" + esc(id) + "' data-bind='" + bind + "'>" + options.map(function (opt) {
+      return "<option" + (opt === value ? " selected" : "") + ">" + esc(opt) + "</option>";
+    }).join("") + "</select>";
+  }
+
+  function goalEditor(goal) {
+    const cats = ["Home", "Education", "Car", "Vacation", "Wedding", "Retirement Spends", "Other"];
+    const once = goal.kind !== "recurring";
+    const loan = goal.loan || { downPaymentPercent: 20, annualRate: 0.085, tenorYears: 15 };
+    return "<div class='grid'>" +
+      field("Name", textInput("goals", goal.id, "name", goal.name)) +
+      field("Category", selectInput("goals", goal.id, "category", goal.category, cats)) +
+      field("Type", "<select data-section='goals' data-id='" + goal.id + "' data-bind='kind'><option value='once'" + (once ? " selected" : "") + ">One time</option><option value='recurring'" + (!once ? " selected" : "") + ">Recurring</option></select>") +
+      field(once ? "Amount today" : "Amount per occurrence", num("goals", goal.id, "amountToday", goal.amountToday)) +
+      field("Inflation %", num("goals", goal.id, "inflation", goal.inflation, "percent")) +
+      (once ? field("Target age", num("goals", goal.id, "targetAge", goal.targetAge)) : "") +
+      (!once ? field("Start age", num("goals", goal.id, "startAge", goal.startAge)) + field("End age", num("goals", goal.id, "endAge", goal.endAge)) + field("Every", num("goals", goal.id, "every", goal.every)) + field("Unit", "<select data-section='goals' data-id='" + goal.id + "' data-bind='unit'><option" + (goal.unit !== "year" ? " selected" : "") + ">month</option><option" + (goal.unit === "year" ? " selected" : "") + ">year</option></select>") : "") +
+      (!once ? "<label class='check'><input data-section='goals' data-id='" + goal.id + "' data-bind='safetyShield' type='checkbox'" + (goal.safetyShield ? " checked" : "") + "> Safety shield</label>" : "") +
+      (once ? "<label class='check'><input data-section='goals' data-id='" + goal.id + "' data-bind='loanOn' type='checkbox'" + (goal.loan ? " checked" : "") + "> Fund part with a loan</label>" : "") +
+      (once && goal.loan ? field("Down payment %", num("goals", goal.id, "downPaymentPercent", loan.downPaymentPercent)) + field("Loan interest %", num("goals", goal.id, "loanRate", loan.annualRate, "percent")) + field("Tenor years", num("goals", goal.id, "tenorYears", loan.tenorYears)) : "") +
+      "</div>";
+  }
+  function incomeEditor(row) {
+    return "<div class='grid'>" +
+      field("Label", textInput("incomes", row.id, "name", row.name)) +
+      field("Type", "<select data-section='incomes' data-id='" + row.id + "' data-bind='kind'><option value='recurring'" + (row.kind !== "once" ? " selected" : "") + ">Recurring</option><option value='once'" + (row.kind === "once" ? " selected" : "") + ">One time</option></select>") +
+      field("Amount today", num("incomes", row.id, "amountToday", row.amountToday)) +
+      (row.kind === "once" ? "" : field("Every", num("incomes", row.id, "every", row.every)) + field("Unit", "<select data-section='incomes' data-id='" + row.id + "' data-bind='unit'><option" + (row.unit !== "year" ? " selected" : "") + ">month</option><option" + (row.unit === "year" ? " selected" : "") + ">year</option></select>") + field("Starting growth %", num("incomes", row.id, "growthStart", row.growthStart, "percent")) + field("Ending growth %", num("incomes", row.id, "growthEnd", row.growthEnd, "percent"))) +
+      field("Start date", dateInput("incomes", row.id, "startDate", row.startDate)) +
+      field("End date", dateInput("incomes", row.id, "endDate", row.endDate)) +
+      "</div><p class='meta'>Leave the end date empty to stop this income at retirement.</p>";
+  }
+  function liabilityEditor(row, plan) {
+    const warn = WP.loanLength(plan, row.endDate) ? "" : "<p class='note'>Set an end date after the plan start. Until then this loan is left out of the projection.</p>";
+    return warn + "<div class='grid'>" +
+      field("Label", textInput("liabilities", row.id, "name", row.name)) +
+      field("Principal left", num("liabilities", row.id, "principal", row.principal)) +
+      field("End date", dateInput("liabilities", row.id, "endDate", row.endDate)) +
+      field("Interest %", num("liabilities", row.id, "annualRate", row.annualRate, "percent")) +
+      "</div>";
+  }
+  function assetEditor(row) {
+    const cats = ["Cash/Bank", "Equity/MF", "Real Estate", "Gold", "Fixed Income", "Retirement Corpus (PF/NPS)", "Other"];
+    return "<div class='grid'>" +
+      field("Label", textInput("assets", row.id, "name", row.name)) +
+      field("Category", selectInput("assets", row.id, "category", row.category, cats)) +
+      field("Balance today", num("assets", row.id, "amount", row.amount)) +
+      field("Growth % per year", num("assets", row.id, "growth", row.growth, "percent")) +
+      field("Rebalance date", dateInput("assets", row.id, "rebalanceDate", row.rebalanceDate)) +
+      "</div><p class='meta'>The balance cannot be spent until the rebalance year.</p>";
+  }
+
+  function chart(rows, lines) {
+    const w = 520, h = 180, pad = 28;
+    const values = lines.flatMap(function (line) { return rows.map(line.get); });
+    let min = Math.min(0, ...values);
+    let max = Math.max(1, ...values);
+    if (min === max) max = min + 1;
+    function x(i) { return pad + (rows.length === 1 ? (w - pad * 2) / 2 : (i * (w - pad * 2)) / (rows.length - 1)); }
+    function y(v) { return h - pad - ((v - min) / (max - min)) * (h - pad * 2); }
+    const paths = lines.map(function (line) {
+      const d = rows.map(function (row, i) { return (i ? "L" : "M") + x(i).toFixed(1) + " " + y(line.get(row)).toFixed(1); }).join(" ");
+      return "<path d='" + d + "' fill='none' stroke='" + line.color + "' stroke-width='2'/>";
+    }).join("");
+    const labels = rows.length ? "<text x='" + pad + "' y='" + (h - 8) + "' font-size='11' fill='#5c6570'>" + rows[0].year + "</text><text x='" + (w - pad) + "' y='" + (h - 8) + "' font-size='11' fill='#5c6570' text-anchor='end'>" + rows[rows.length - 1].year + "</text>" : "";
+    const legend = lines.map(function (line, i) { return "<span style='color:" + line.color + "'>" + esc(line.name) + "</span>"; }).join(" · ");
+    return "<div><svg viewBox='0 0 " + w + " " + h + "' role='img'>" + paths + labels + "</svg><p class='meta'>" + legend + "</p></div>";
+  }
+
+  function reportHTML(plan) {
+    const err = WP.profileError(plan);
+    if (err) return "<p class='note'>" + esc(err) + "</p>";
+    const result = WP.project(plan);
+    const early = WP.earliestRetirementAge(plan);
+    const status = result.funded
+      ? "Funded through age " + plan.lifeExpectancyAge + "."
+      : "Shortfall starts at age " + result.firstShortfallAge + ". Unfunded total " + inr(result.unfunded) + ".";
+    const earlyText = early == null ? "No retirement age in range funds this plan." : "Earliest retirement age that still funds the plan: " + early + ".";
+    const cards = [
+      ["Retirement age", plan.retirementAge],
+      ["Final net worth", inr(result.finalNetWorth)],
+      ["Peak net worth", inr(result.peakNetWorth) + " at " + result.peakAge],
+      ["Interest paid", inr(result.interestPaid)],
+      ["Total invested", inr(result.totalInvested)],
+      ["Contingency at end", inr(result.contingencyEnd)]
+    ].map(function (pair) { return "<div class='stat'><span class='meta'>" + pair[0] + "</span><b>" + pair[1] + "</b></div>"; }).join("");
+    const goalRows = plan.goals.map(function (goal) {
+      const firstYear = goal.kind === "once"
+        ? yearOfSafe(plan.dateOfBirth) + Number(goal.targetAge)
+        : yearOfSafe(plan.dateOfBirth) + Number(goal.startAge);
+      const years = Math.max(0, firstYear - yearOfSafe(plan.planStartDate));
+      const inflated = (Number(goal.amountToday) || 0) * Math.pow(1 + (Number(goal.inflation) || 0), years);
+      const down = goal.loan ? inflated * (Number(goal.loan.downPaymentPercent) || 0) / 100 : null;
+      return "<tr><td>" + esc(goal.name) + "</td><td>" + inr(goal.amountToday) + "</td><td>" + inr(inflated) + "</td><td>" + (down == null ? "—" : inr(down)) + "</td><td>" + (result.funded ? "Funded" : "Shortfall") + "</td></tr>";
+    }).join("");
+    const yearRows = result.rows.map(function (row) {
+      return "<tr><td>" + row.age + "</td><td>" + row.year + "</td><td>" + inr(row.income) + "</td><td>" + inr(row.goalSpending) + "</td><td>" + inr(row.liabilityPayment) + "</td><td>" + inr(row.interest) + "</td><td>" + inr(row.contingency) + "</td><td>" + inr(row.shortfall) + "</td><td>" + inr(row.netWorth) + "</td></tr>";
+    }).join("");
+    const inputs = "<p><b>Born</b> " + esc(plan.dateOfBirth) + " · <b>Retire</b> " + plan.retirementAge + " · <b>Life expectancy</b> " + plan.lifeExpectancyAge + " · <b>Start</b> " + esc(plan.planStartDate) + " · <b>Inflation</b> " + (plan.inflation * 100).toFixed(2) + "% · <b>Contingency</b> " + plan.contingencyMonths + " months · <b>Build</b> " + plan.buildPeriodMonths + " months</p>" +
+      listLine("Incomes", plan.incomes, function (row) { return esc(row.name) + " " + inr(row.amountToday); }) +
+      listLine("Assets", plan.assets, function (row) { return esc(row.name) + " " + inr(row.amount); }) +
+      listLine("Liabilities", plan.liabilities, function (row) { return esc(row.name) + " " + inr(row.principal); }) +
+      listLine("Goals", plan.goals, function (row) { return esc(row.name) + " " + inr(row.amountToday); });
+    return "<section class='card'><p class='" + (result.funded ? "ok" : "note") + "'>" + status + " " + earlyText + "</p><div class='cards'>" + cards + "</div>" +
+      "<div class='chart-grid'>" +
+      chart(result.rows, [{ name: "Net worth", color: "#1d6b48", get: function (r) { return r.netWorth; } }]) +
+      chart(result.rows, [{ name: "Assets", color: "#1d6b48", get: function (r) { return r.assets; } }, { name: "Liabilities", color: "#8d4e16", get: function (r) { return r.liabilities; } }]) +
+      "</div>" +
+      chart(result.rows, [{ name: "Contingency", color: "#1d6b48", get: function (r) { return r.contingency; } }]) +
+      "<h2>Goals</h2><table><thead><tr><th>Name</th><th>Today</th><th>Inflated at first due year</th><th>Down payment</th><th>Plan</th></tr></thead><tbody>" + (goalRows || "<tr><td colspan='5'>No goals</td></tr>") + "</tbody></table>" +
+      "<h2>Year by year</h2><details><summary>Show " + result.rows.length + " years</summary><table><thead><tr><th>Age</th><th>Year</th><th>Income</th><th>Goals</th><th>Loan payment</th><th>Interest</th><th>Contingency</th><th>Shortfall</th><th>Net worth</th></tr></thead><tbody>" + yearRows + "</tbody></table></details>" +
+      "<h2>Inputs</h2>" + inputs + "</section>";
+  }
+  function yearOfSafe(iso) { return Number(String(iso).slice(0, 4)); }
+  function listLine(title, rows, fmt) {
+    return "<p><b>" + title + ".</b> " + (rows.length ? rows.map(fmt).join("; ") : "None") + "</p>";
+  }
+
+  function rowSummary(section, row) {
+    if (section === "goals") return inr(row.amountToday) + " · " + (row.kind === "once" ? "once at " + row.targetAge : "every " + row.every + " " + row.unit);
+    if (section === "incomes") return inr(row.amountToday) + " · " + row.kind;
+    if (section === "liabilities") return inr(row.principal) + " · " + ((Number(row.annualRate) || 0) * 100).toFixed(2) + "%";
+    return inr(row.amount) + " · " + ((Number(row.growth) || 0) * 100).toFixed(2) + "% · " + esc(row.category);
+  }
+  function listBlock(section, rows, editor, plan) {
+    if (!rows.length) return "<p class='meta'>None yet.</p>";
+    return rows.map(function (row) {
+      return "<div class='item'><div><strong>" + esc(row.name || "Untitled") + "</strong><span class='meta'>" + rowSummary(section, row) + "</span></div><button type='button' class='warn' data-action='remove' data-section='" + section + "' data-id='" + row.id + "'>Remove</button></div>" + editor(row, plan);
+    }).join("");
+  }
+
+  function render() {
+    const plan = active();
+    const options = plans.map(function (p) {
+      return "<option value='" + esc(p.id) + "'" + (p.id === plan.id ? " selected" : "") + ">" + esc(p.name) + "</option>";
+    }).join("");
+    const edit = view === "edit" ? (
+      "<section class='card'><h2>Preferences</h2>" + (profileMsg ? "<p class='note'>" + esc(profileMsg) + "</p>" : "") +
+      "<div class='grid'>" +
+      field("Date of birth", dateInput("profile", "", "dateOfBirth", plan.dateOfBirth)) +
+      field("Life expectancy", num("profile", "", "lifeExpectancyAge", plan.lifeExpectancyAge)) +
+      field("Retirement age", num("profile", "", "retirementAge", plan.retirementAge)) +
+      field("Plan start", dateInput("profile", "", "planStartDate", plan.planStartDate)) +
+      field("Contingency months", num("profile", "", "contingencyMonths", plan.contingencyMonths)) +
+      field("Build period months", num("profile", "", "buildPeriodMonths", plan.buildPeriodMonths)) +
+      field("Inflation %", num("profile", "", "inflation", plan.inflation, "percent")) +
+      "</div><p class='meta'>Age at plan start: " + ageNow(plan) + ". Amounts are today's rupees. Currency is INR.</p></section>" +
+      "<section class='card'><h2>Goals</h2><div class='presets'>" +
+      button("preset", "retirement", "Retirement") + button("preset", "home", "Dream home") + button("preset", "education", "Child's education") + button("preset", "wedding", "Child's wedding") + button("preset", "car", "Car upgrade") + button("preset", "spend", "Monthly spend") + button("preset", "vacation", "Annual vacation") + button("preset", "custom", "Create custom") +
+      "</div>" + listBlock("goals", plan.goals, goalEditor, plan) + "</section>" +
+      "<section class='card'><h2>Incomes</h2><div class='actions'><button type='button' data-action='add-income'>Add income</button></div>" + listBlock("incomes", plan.incomes, incomeEditor, plan) + "</section>" +
+      "<section class='card'><h2>Liabilities</h2><div class='presets'><button type='button' data-action='add-loan' data-preset='home'>Home loan</button><button type='button' data-action='add-loan' data-preset='car'>Car loan</button><button type='button' data-action='add-loan' data-preset='custom'>Custom loan</button></div>" + listBlock("liabilities", plan.liabilities, liabilityEditor, plan) + "</section>" +
+      "<section class='card'><h2>Assets</h2><div class='presets'><button type='button' data-action='add-asset' data-preset='liquid'>Current liquid net worth</button><button type='button' data-action='add-asset' data-preset='property'>Real estate to sell</button><button type='button' data-action='add-asset' data-preset='nps'>NPS/PF lumpsum</button><button type='button' data-action='add-asset' data-preset='fd'>FD maturity</button><button type='button' data-action='add-asset' data-preset='custom'>Custom asset</button></div>" + listBlock("assets", plan.assets, assetEditor, plan) + "</section>"
+    ) : reportHTML(plan);
+    document.getElementById("app").innerHTML =
+      "<div class='bar noprint'><div class='row'><select id='plan-pick'>" + options + "</select><button type='button' data-action='new'>New</button><button type='button' data-action='rename'>Rename</button><button type='button' data-action='duplicate'>Duplicate</button><button type='button' class='warn' data-action='delete'>Delete</button></div><div class='row'><button type='button' class='" + (view === "edit" ? "primary" : "") + "' data-action='view' data-view='edit'>Edit</button><button type='button' class='" + (view === "report" ? "primary" : "") + "' data-action='view' data-view='report'>Report</button></div></div>" +
+      edit +
+      "<div class='actions noprint' style='margin-bottom:28px'><button type='button' data-action='print'>Print / Save report</button><button type='button' data-action='export'>Export JSON</button><label class='file'>Import JSON<input id='import-file' type='file' accept='application/json,.json' hidden></label></div>";
+    const reportMount = document.getElementById("live-report");
+    if (view === "edit") {
+      const holder = document.createElement("section");
+      holder.id = "live-report";
+      holder.innerHTML = reportHTML(plan);
+      document.getElementById("app").appendChild(holder);
+    }
+  }
+  function button(action, preset, label) {
+    return "<button type='button' data-action='" + action + "' data-preset='" + preset + "'>" + label + "</button>";
+  }
+
+  function readValue(el) {
+    if (el.type === "checkbox") return el.checked;
+    if (el.dataset.scale === "percent") return (Number(el.value) || 0) / 100;
+    if (el.type === "number") return Number(el.value);
+    if (el.type === "date") return el.value || null;
+    return el.value;
+  }
+  function applyInput(el) {
+    const plan = active();
+    const bind = el.dataset.bind;
+    const value = readValue(el);
+    if (el.dataset.section === "profile") {
+      const next = Object.assign({}, plan, { [bind]: value });
+      const err = WP.profileError(next);
+      profileMsg = err;
+      const note = document.querySelector(".card .note");
+      if (err) {
+        if (note) note.textContent = err;
+        else render();
+        return;
+      }
+      plan[bind] = value;
+      profileMsg = "";
+      save();
+      refreshReport();
+      return;
+    }
+    const list = plan[el.dataset.section];
+    const row = list.find(function (item) { return item.id === el.dataset.id; });
+    if (!row) return;
+    if (bind === "loanOn") {
+      row.loan = value ? { downPaymentPercent: 20, annualRate: 0.085, tenorYears: 15 } : null;
+      save();
+      render();
+      return;
+    }
+    if (bind === "downPaymentPercent" || bind === "loanRate" || bind === "tenorYears") {
+      row.loan = row.loan || { downPaymentPercent: 20, annualRate: 0.085, tenorYears: 15 };
+      if (bind === "downPaymentPercent") row.loan.downPaymentPercent = Math.min(100, Math.max(0, Number(value) || 0));
+      if (bind === "loanRate") row.loan.annualRate = Number(value) || 0;
+      if (bind === "tenorYears") row.loan.tenorYears = Number(value) || 0;
+    } else if (bind === "kind" || bind === "unit" || bind === "safetyShield") {
+      row[bind] = bind === "kind" ? el.value : value;
+      if (bind === "kind" || bind === "unit") {
+        save();
+        render();
+        return;
+      }
+    } else {
+      row[bind] = value;
+    }
+    save();
+    refreshReport();
+  }
+  function refreshReport() {
+    const holder = document.getElementById("live-report");
+    if (holder) holder.innerHTML = reportHTML(active());
+    if (view === "report") render();
+  }
+
+  document.getElementById("app").addEventListener("input", function (event) {
+    if (event.target.dataset && event.target.dataset.bind) applyInput(event.target);
+  });
+  document.getElementById("app").addEventListener("change", function (event) {
+    if (event.target.id === "plan-pick") {
+      activeId = event.target.value;
+      profileMsg = "";
+      save();
+      render();
+      return;
+    }
+    if (event.target.id === "import-file") {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function () {
+        try {
+          const data = JSON.parse(String(reader.result));
+          if (!data || typeof data.name !== "string" || !Array.isArray(data.incomes) || !Array.isArray(data.assets) || !Array.isArray(data.liabilities) || !Array.isArray(data.goals)) throw new Error("bad");
+          data.id = uid();
+          ["incomes", "assets", "liabilities", "goals"].forEach(function (key) {
+            data[key].forEach(function (row) { row.id = uid(); });
+          });
+          plans.push(data);
+          activeId = data.id;
+          save();
+          render();
+        } catch (e) {
+          alert("That file is not a plan.");
+        }
+      };
+      reader.readAsText(file);
+      return;
+    }
+    if (event.target.dataset && event.target.dataset.bind) applyInput(event.target);
+  });
+  document.getElementById("app").addEventListener("click", function (event) {
+    const btn = event.target.closest("button");
+    if (!btn) return;
+    const plan = active();
+    const action = btn.dataset.action;
+    if (action === "view") { view = btn.dataset.view; render(); }
+    if (action === "new") {
+      const name = prompt("Plan name", "New plan");
+      if (!name) return;
+      const created = blankPlan();
+      created.name = name.trim();
+      plans.push(created);
+      activeId = created.id;
+      save();
+      render();
+    }
+    if (action === "rename") {
+      const name = prompt("Plan name", plan.name);
+      if (!name) return;
+      plan.name = name.trim();
+      save();
+      render();
+    }
+    if (action === "duplicate") {
+      const copy = JSON.parse(JSON.stringify(plan));
+      copy.id = uid();
+      copy.name = "Copy of " + plan.name;
+      ["incomes", "assets", "liabilities", "goals"].forEach(function (key) {
+        copy[key].forEach(function (row) { row.id = uid(); });
+      });
+      plans.push(copy);
+      activeId = copy.id;
+      save();
+      render();
+    }
+    if (action === "delete") {
+      if (plans.length === 1) {
+        plans[0] = blankPlan();
+        activeId = plans[0].id;
+      } else if (confirm("Delete " + plan.name + "?")) {
+        plans = plans.filter(function (p) { return p.id !== plan.id; });
+        activeId = plans[0].id;
+      } else return;
+      save();
+      render();
+    }
+    if (action === "preset") presets()[btn.dataset.preset]();
+    if (action === "add-income") addIncome();
+    if (action === "add-loan") {
+      const kind = btn.dataset.preset;
+      if (kind === "home") addLiability({ name: "Home loan", annualRate: 0.08, endYears: 30 });
+      if (kind === "car") addLiability({ name: "Car loan", annualRate: 0.095, endYears: 5 });
+      if (kind === "custom") addLiability({ name: "Custom loan", annualRate: 0.12, endDate: "" });
+    }
+    if (action === "add-asset") {
+      const kind = btn.dataset.preset;
+      if (kind === "liquid") addAsset({ name: "Current liquid net worth", category: "Equity/MF", growth: 0.09, rebalance: "start" });
+      if (kind === "property") addAsset({ name: "Real estate to sell", category: "Real Estate", growth: 0.05, rebalanceYears: 10 });
+      if (kind === "nps") addAsset({ name: "NPS/PF lumpsum", category: "Retirement Corpus (PF/NPS)", growth: 0.08, rebalance: "retire" });
+      if (kind === "fd") addAsset({ name: "FD maturity", category: "Fixed Income", growth: 0.06, rebalanceYears: 1 });
+      if (kind === "custom") addAsset({ name: "Custom asset", category: "Other", growth: 0.08, rebalance: "start" });
+    }
+    if (action === "remove") {
+      plan[btn.dataset.section] = plan[btn.dataset.section].filter(function (row) { return row.id !== btn.dataset.id; });
+      save();
+      render();
+    }
+    if (action === "print") {
+      view = "report";
+      render();
+      setTimeout(function () { window.print(); }, 50);
+    }
+    if (action === "export") {
+      const blob = new Blob([JSON.stringify(plan, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (plan.name || "plan").replace(/[^\w\- ]+/g, "") + ".json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+  });
+  render();
+})();
+</script>
+</body>
+</html>
