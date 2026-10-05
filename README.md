@@ -4,7 +4,7 @@ A retirement planner you can use in the browser.
 
 **Open the app:** [https://sabarish-soft.github.io/fin_planner/](https://sabarish-soft.github.io/fin_planner/)
 
-Plans stay in your browser. Nothing is uploaded. You can keep several plans, export or import one as JSON, and print or save the report from the browser’s print dialog.
+Plans stay in your browser. Nothing is uploaded. Save JSON downloads every plan in one file, and Load JSON brings that file back. A file that holds a single plan is added alongside the ones already here. You can print or save the report from the browser’s print dialog.
 
 ## What you enter
 
@@ -20,7 +20,7 @@ Amounts are today's rupees.
 
 Each year from the plan start through life expectancy, assets grow, income is added, loans are paid, and goals are spent at their inflated cost. Contingency is refilled from savings up to several months of that year's recurring costs, and the balance earns a short-term return so it keeps moving. It pays safety-shield goals when income does not cover them. Other spending comes from liquid assets. A gap is a shortfall.
 
-The report shows whether the plan stays funded, the earliest retirement age that still funds it, final and peak net worth, interest paid, amount invested, and the contingency balance.
+The report shows whether the plan stays funded, the earliest retirement age that still funds it, final and peak net worth, interest paid, amount invested, and the contingency balance. A month-by-month check, with a chart of income, goals, cash left, and any short-term loan, shows whether each goal is covered by cash already received, needs investments, or is still short.
 
 ## Run the projection check
 

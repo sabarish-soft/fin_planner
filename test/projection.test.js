@@ -8,7 +8,7 @@ if (!match) throw new Error("engine script missing");
 
 const sandbox = {};
 vm.runInNewContext(match[1], sandbox);
-const { project, earliestRetirementAge } = sandbox.WealthPlan;
+const { project, earliestRetirementAge, cashflow } = sandbox.WealthPlan;
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg);
@@ -218,5 +218,59 @@ const wedding = project({
 near(wedding.rows[0].netWorth, 75000, "wedding is removed from wealth");
 near(wedding.rows[0].assets, 75000, "wedding is removed from investments");
 assert(!wedding.rows[0].shortfall, "locked savings can pay the wedding");
+
+const gone = project({
+  dateOfBirth: "1980-01-01",
+  lifeExpectancyAge: 43,
+  retirementAge: 50,
+  planStartDate: "2020-01-01",
+  contingencyMonths: 0,
+  buildPeriodMonths: 0,
+  inflation: 0,
+  incomes: [],
+  assets: [{ amount: 10000, growth: 0, rebalanceDate: "2020-01-01" }],
+  liabilities: [],
+  goals: [{ kind: "once", amountToday: 10000, inflation: 0, targetAge: 41 }]
+});
+assert(gone.funded === false, "running out before the end is not funded");
+assert(gone.depletedAge === 41, "depletion age");
+assert(gone.firstShortfallAge == null, "the goal itself was paid");
+
+function flowPlan(extra) {
+  return Object.assign({
+    dateOfBirth: "1980-01-01",
+    lifeExpectancyAge: 41,
+    retirementAge: 50,
+    planStartDate: "2020-01-01",
+    contingencyMonths: 0,
+    buildPeriodMonths: 0,
+    inflation: 0,
+    incomes: [],
+    assets: [],
+    liabilities: [],
+    goals: [{ name: "Child's wedding", kind: "once", amountToday: 25000, inflation: 0, targetAge: 40 }]
+  }, extra);
+}
+const january = cashflow(flowPlan({
+  incomes: [{ kind: "recurring", amountToday: 10000, every: 1, unit: "month", startDate: "2020-01-01", endDate: "2020-12-31", growthStart: 0, growthEnd: 0 }]
+}));
+assert(january.events.length === 1 && january.events[0].cover === "loan", "January wedding is short before later salary");
+near(january.events[0].gap, 15000, "January wedding gap");
+const december = cashflow(flowPlan({
+  dateOfBirth: "1980-12-01",
+  incomes: [{ kind: "recurring", amountToday: 10000, every: 1, unit: "month", startDate: "2020-01-01", endDate: "2020-12-31", growthStart: 0, growthEnd: 0 }]
+}));
+assert(december.events[0].cover === "cash" && december.events[0].date.slice(0, 7) === "2020-12", "December wedding uses salary already received");
+const invested = cashflow(flowPlan({
+  assets: [{ amount: 100000, growth: 0, rebalanceDate: "2020-01-01" }]
+}));
+assert(invested.events[0].cover === "investments", "liquid savings pay the wedding");
+const other = cashflow(flowPlan({
+  assets: [{ amount: 100000, growth: 0, rebalanceDate: "2030-01-01" }]
+}));
+assert(other.events[0].cover === "other", "locked savings are other investments");
+const bare = cashflow(flowPlan({}));
+assert(bare.events[0].cover === "loan", "nothing saved needs a short-term loan");
+near(bare.events[0].gap, 25000, "full wedding is short");
 
 console.log("projection tests passed");

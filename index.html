@@ -89,7 +89,7 @@
 <body>
 <header>
   <h1>Wealth plan</h1>
-  <p class="lead">Yearly retirement projection in rupees. It updates as you edit.</p>
+  <p class="lead">Yearly retirement projection in rupees, with a month-by-month check of each goal. It updates as you edit.</p>
 </header>
 <main id="app"></main>
 <script id="engine">
@@ -374,9 +374,16 @@
     let peak = rows[0] || { netWorth: 0, age: null };
     rows.forEach(function (row) { if (row.netWorth > peak.netWorth) peak = row; });
     const shortRow = rows.find(function (row) { return row.shortfall > 0.5; });
+    let seenWealth = false;
+    let depleted = null;
+    rows.forEach(function (row, i) {
+      if (row.netWorth > 0.5) seenWealth = true;
+      else if (seenWealth && i < rows.length - 1 && !depleted) depleted = row;
+    });
     return {
       rows: rows,
-      funded: !shortRow,
+      funded: !shortRow && !depleted,
+      depletedAge: depleted ? depleted.age : null,
       firstShortfallAge: shortRow ? shortRow.age : null,
       finalNetWorth: rows.length ? rows[rows.length - 1].netWorth : 0,
       peakNetWorth: peak.netWorth,
@@ -386,6 +393,181 @@
       contingencyEnd: rows.length ? rows[rows.length - 1].contingency : 0,
       unfunded: rows.reduce(function (sum, row) { return sum + row.shortfall; }, 0)
     };
+  }
+  function cashflow(plan) {
+    const startYear = yearOf(plan.planStartDate);
+    const endYear = yearOf(plan.dateOfBirth) + Number(plan.lifeExpectancyAge);
+    const liquid = [];
+    const locked = [];
+    (plan.assets || []).forEach(function (asset) {
+      const item = {
+        amount: Number(asset.amount) || 0,
+        growth: Number(asset.growth) || 0,
+        rebalanceDate: asset.rebalanceDate || plan.planStartDate
+      };
+      if (yearOf(item.rebalanceDate) <= startYear) liquid.push(item);
+      else locked.push(item);
+    });
+    const loans = [];
+    (plan.liabilities || []).forEach(function (row) {
+      const n = loanLength(plan, row.endDate);
+      const principal = Number(row.principal) || 0;
+      if (!n || principal <= 0) return;
+      loans.push({
+        balance: principal,
+        rate: Number(row.annualRate) || 0,
+        payment: pmt(principal, Number(row.annualRate) || 0, n),
+        left: n
+      });
+    });
+    let cash = 0;
+    let surplus = 0;
+    const months = [];
+    const events = [];
+    function grow() {
+      const all = liquid.concat(locked);
+      const avg = all.length ? all.reduce(function (sum, asset) { return sum + asset.growth; }, 0) / all.length : 0;
+      all.forEach(function (asset) { asset.amount *= 1 + asset.growth; });
+      surplus *= 1 + avg;
+    }
+    function unlock(year) {
+      for (let i = locked.length - 1; i >= 0; i--) {
+        if (year >= yearOf(locked[i].rebalanceDate)) {
+          liquid.push(locked[i]);
+          locked.splice(i, 1);
+        }
+      }
+    }
+    function pull(list, amount) {
+      let left = amount;
+      let paid = 0;
+      list.forEach(function (asset) {
+        if (left <= 0) return;
+        const take = Math.min(Math.max(0, asset.amount), left);
+        asset.amount -= take;
+        left -= take;
+        paid += take;
+      });
+      return paid;
+    }
+    function pay(amount, allowLocked) {
+      let left = amount;
+      const fromCash = Math.min(Math.max(0, cash), left);
+      cash -= fromCash;
+      left -= fromCash;
+      const fromSurplus = Math.min(Math.max(0, surplus), left);
+      surplus -= fromSurplus;
+      left -= fromSurplus;
+      const fromLiquid = pull(liquid, left);
+      left -= fromLiquid;
+      const fromOther = allowLocked ? pull(locked, left) : 0;
+      left -= fromOther;
+      return { fromCash: fromCash, fromInvestments: fromSurplus + fromLiquid, fromOther: fromOther, gap: left };
+    }
+    function serviceLoan(loan) {
+      if (loan.left <= 0 || loan.balance <= 0) return { paid: 0, gap: 0 };
+      const interest = loan.balance * loan.rate;
+      loan.balance += interest;
+      const due = loan.left === 1 ? loan.balance : Math.min(loan.payment, loan.balance);
+      const step = pay(due, false);
+      const paid = due - step.gap;
+      loan.balance = Math.max(0, loan.balance - paid);
+      loan.left -= 1;
+      return { paid: paid, gap: step.gap };
+    }
+    function coverOf(step) {
+      if (step.gap > 0.5) return "loan";
+      if (step.fromOther > 0.5) return "other";
+      if (step.fromInvestments > 0.5) return "investments";
+      return "cash";
+    }
+    for (let year = startYear; year <= endYear; year++) {
+      grow();
+      unlock(year);
+      for (let m = 1; m <= 12; m++) {
+        const monthStart = isoOf(year, m, 1);
+        const monthEnd = isoOf(year, m, new Date(year, m, 0).getDate());
+        if (monthEnd < plan.planStartDate) continue;
+        let income = 0;
+        (plan.incomes || []).forEach(function (item) {
+          incomeDates(item, plan, year).forEach(function (d) {
+            if (d >= monthStart && d <= monthEnd && d >= plan.planStartDate) income += amountInYear(item, year, plan);
+          });
+        });
+        cash += income;
+        let loanPaid = 0;
+        let loanGap = 0;
+        if (m === 1) {
+          loans.forEach(function (loan) {
+            const step = serviceLoan(loan);
+            loanPaid += step.paid;
+            loanGap += step.gap;
+          });
+        }
+        let goalCost = 0;
+        let fromCash = 0;
+        let fromInvestments = 0;
+        let fromOther = 0;
+        let gap = loanGap;
+        (plan.goals || []).forEach(function (goal, goalIndex) {
+          goalDates(plan, goal, year).forEach(function (d) {
+            if (d < monthStart || d > monthEnd || d < plan.planStartDate) return;
+            let cost = inflated(goal, plan, year);
+            let borrowed = 0;
+            if (goal.kind === "once" && goal.loan) {
+              const downPct = Math.min(100, Math.max(0, Number(goal.loan.downPaymentPercent) || 0)) / 100;
+              borrowed = Math.max(0, cost * (1 - downPct));
+              cost = cost - borrowed;
+              if (borrowed > 0) {
+                const tenor = Math.max(1, Number(goal.loan.tenorYears) || 1);
+                const rate = Number(goal.loan.annualRate) || 0;
+                const created = { balance: borrowed, rate: rate, payment: pmt(borrowed, rate, tenor), left: tenor };
+                loans.push(created);
+                const emi = serviceLoan(created);
+                loanPaid += emi.paid;
+                gap += emi.gap;
+              }
+            }
+            const step = pay(cost, goal.kind === "once");
+            fromCash += step.fromCash;
+            fromInvestments += step.fromInvestments;
+            fromOther += step.fromOther;
+            gap += step.gap;
+            goalCost += cost;
+            events.push({
+              name: goal.name || "Goal",
+              index: goalIndex,
+              date: d,
+              cost: cost,
+              borrowed: borrowed,
+              fromCash: step.fromCash,
+              fromInvestments: step.fromInvestments,
+              fromOther: step.fromOther,
+              gap: step.gap,
+              cover: coverOf(step)
+            });
+          });
+        });
+        if (income > 0 || loanPaid > 0 || goalCost > 0) {
+          months.push({
+            month: monthStart.slice(0, 7),
+            income: income,
+            goals: goalCost,
+            loans: loanPaid,
+            fromCash: fromCash,
+            fromInvestments: fromInvestments,
+            fromOther: fromOther,
+            gap: gap,
+            cash: cash
+          });
+        }
+        if (m === 12) {
+          surplus += cash;
+          cash = 0;
+        }
+      }
+    }
+    return { months: months, events: events };
   }
   function earliestRetirementAge(plan) {
     const startAge = ageOn(plan.dateOfBirth, plan.planStartDate);
@@ -399,6 +581,7 @@
   }
   globalThis.WealthPlan = {
     project: project,
+    cashflow: cashflow,
     earliestRetirementAge: earliestRetirementAge,
     profileError: profileError,
     ageOn: ageOn,
@@ -679,14 +862,68 @@
     return "<div class='chart' data-years='" + rows.map(function (row) { return row.year; }).join(",") + "' data-ages='" + rows.map(function (row) { return row.age; }).join(",") + "' data-series='" + series + "' data-marks='" + markData.join(";") + "'><svg viewBox='0 0 " + w + " " + h + "' role='img'>" + paths + marks + "<line class='cursor' x1='0' x2='0' y1='" + pad + "' y2='" + (h - pad) + "' stroke='#e8eef5' stroke-opacity='0.35' visibility='hidden'/>" + labels + "</svg><div class='tip' hidden></div><p class='meta'>" + legend + "</p></div>";
   }
 
+  function coverLabel(cover) {
+    if (cover === "loan") return "Short-term loan";
+    if (cover === "other") return "Spend other investments";
+    if (cover === "investments") return "Spend investments";
+    return "Covered by cash";
+  }
+  function cashflowHTML(plan) {
+    const flow = WP.cashflow(plan);
+    const rank = { cash: 0, investments: 1, other: 2, loan: 3 };
+    const byGoal = [];
+    flow.events.forEach(function (ev) {
+      let row = byGoal[ev.index];
+      if (!row) {
+        row = { name: ev.name, index: ev.index, count: 0, cost: 0, gap: 0, borrowed: 0, cover: "cash", tight: "" };
+        byGoal[ev.index] = row;
+      }
+      row.count += 1;
+      row.cost += ev.cost;
+      row.gap += ev.gap;
+      row.borrowed += ev.borrowed;
+      if (rank[ev.cover] > rank[row.cover]) row.cover = ev.cover;
+      if (ev.cover !== "cash" && !row.tight) row.tight = ev.date;
+    });
+    const goals = byGoal.filter(Boolean);
+    const counts = { cash: 0, investments: 0, other: 0, loan: 0 };
+    flow.events.forEach(function (ev) { counts[ev.cover] += 1; });
+    const summary = flow.events.length
+      ? counts.cash + " payments covered by cash. " + counts.investments + " spend investments. " + counts.other + " spend other investments. " + counts.loan + " need a short-term loan."
+      : "No goal payments in this plan.";
+    const goalTable = goals.map(function (row) {
+      const tight = row.tight ? row.tight : "—";
+      const loan = row.borrowed > 0.5 ? " · planned loan " + inr(row.borrowed) : "";
+      const how = row.gap > 0.5 && row.cost - row.gap > 0.5 ? "Short-term loan for the rest" : coverLabel(row.cover);
+      return "<tr><td><span class='swatch' style='background:" + goalColor(row.index) + "'></span>" + esc(row.name) + "</td><td>" + row.count + "</td><td>" + inr(row.cost) + "</td><td>" + how + loan + "</td><td>" + inr(row.gap) + "</td><td>" + esc(tight) + "</td></tr>";
+    }).join("");
+    const monthRows = flow.months.map(function (row) {
+      return "<tr><td>" + row.month + "</td><td>" + inr(row.income) + "</td><td>" + inr(row.goals) + "</td><td>" + inr(row.loans) + "</td><td>" + inr(row.fromCash) + "</td><td>" + inr(row.fromInvestments) + "</td><td>" + inr(row.fromOther) + "</td><td>" + inr(row.gap) + "</td><td>" + inr(row.cash) + "</td></tr>";
+    }).join("");
+    const flowRows = flow.months.map(function (row) { return { year: row.month, income: row.income, goals: row.goals, cash: row.cash, gap: row.gap }; });
+    const flowChart = flowRows.length ? chart(flowRows, [
+      { name: "Income", color: "#3dbe86", get: function (r) { return r.income; } },
+      { name: "Goals", color: "#ff8b7b", get: function (r) { return r.goals; } },
+      { name: "Cash left", color: "#7eb6ff", get: function (r) { return r.cash; } },
+      { name: "Short-term loan", color: "#e0a06a", get: function (r) { return r.gap; } }
+    ], false) : "";
+    return "<h2>Month-by-month cash flow</h2><p class='meta'>" + summary + " Cash is income already received. A goal due before that cash arrives has to use investments, or a short-term loan if investments are not enough. A planned loan is one you already set on the goal.</p>" +
+      flowChart +
+      "<table><thead><tr><th>Goal</th><th>Payments</th><th>Cash needed</th><th>How it is paid</th><th>Still short</th><th>First tight month</th></tr></thead><tbody>" +
+      (goalTable || "<tr><td colspan='6'>No goals</td></tr>") + "</tbody></table>" +
+      "<details><summary>Show " + flow.months.length + " months with income or spending</summary><table><thead><tr><th>Month</th><th>Income</th><th>Goals</th><th>Loan payment</th><th>Goals from cash</th><th>Investments</th><th>Other investments</th><th>Short-term loan</th><th>Cash left</th></tr></thead><tbody>" +
+      (monthRows || "<tr><td colspan='9'>No cash movement</td></tr>") + "</tbody></table></details>";
+  }
   function reportHTML(plan) {
     const err = WP.profileError(plan);
     if (err) return "<p class='note'>" + esc(err) + "</p>";
     const result = WP.project(plan);
     const early = WP.earliestRetirementAge(plan);
-    const status = result.funded
-      ? "Funded through age " + plan.lifeExpectancyAge + "."
-      : "Shortfall starts at age " + result.firstShortfallAge + ". Unfunded total " + inr(result.unfunded) + ".";
+    const status = result.firstShortfallAge != null
+      ? "Shortfall starts at age " + result.firstShortfallAge + ". Unfunded total " + inr(result.unfunded) + "."
+      : result.depletedAge != null
+        ? "Net worth reaches 0 at age " + result.depletedAge + ", before the plan ends at age " + plan.lifeExpectancyAge + "."
+        : "Funded through age " + plan.lifeExpectancyAge + ".";
     const earlyText = early == null ? "No retirement age in range funds this plan." : "Earliest retirement age that still funds the plan: " + early + ".";
     const cards = [
       ["Retirement age", plan.retirementAge],
@@ -732,6 +969,7 @@
       chart(result.rows, [{ name: "Contingency", color: "#3dbe86", get: function (r) { return r.contingency; } }]) +
       "<h2>One-time goals</h2><table><thead><tr><th>Name</th><th>Today</th><th>Inflated at due year</th><th>Down payment</th><th>Plan</th></tr></thead><tbody>" + (onceRows.join("") || "<tr><td colspan='5'>No one-time goals</td></tr>") + "</tbody></table>" +
       "<h2>Recurring goals</h2><table><thead><tr><th>Name</th><th>Today</th><th>Inflated at first due year</th><th>Down payment</th><th>Plan</th><th>Repeats</th></tr></thead><tbody>" + (recurRows.join("") || "<tr><td colspan='6'>No recurring goals</td></tr>") + "</tbody></table>" +
+      cashflowHTML(plan) +
       "<h2>Year by year</h2><details><summary>Show " + result.rows.length + " years</summary><table><thead><tr><th>Age</th><th>Year</th><th>Income</th><th>Goals</th><th>Loan payment</th><th>Interest</th><th>Contingency</th><th>Shortfall</th><th>Net worth</th></tr></thead><tbody>" + yearRows + "</tbody></table></details>" +
       "<h2>Inputs</h2>" + inputs + "</section>";
   }
@@ -793,7 +1031,7 @@
     document.getElementById("app").innerHTML =
       "<div class='bar noprint'><div class='row'><select id='plan-pick'>" + options + "</select><button type='button' data-action='new'>New</button><button type='button' data-action='rename'>Rename</button><button type='button' data-action='duplicate'>Duplicate</button><button type='button' class='warn' data-action='delete'>Delete</button></div><div class='row'><button type='button' class='" + (view === "edit" ? "primary" : "") + "' data-action='view' data-view='edit'>Edit</button><button type='button' class='" + (view === "report" ? "primary" : "") + "' data-action='view' data-view='report'>Report</button></div></div>" +
       edit +
-      "<div class='actions noprint' style='margin-bottom:28px'><button type='button' data-action='print'>Print / Save report</button><button type='button' data-action='export'>Export JSON</button><label class='file'>Import JSON<input id='import-file' type='file' accept='application/json,.json' hidden></label></div>";
+      "<div class='actions noprint' style='margin-bottom:28px'><button type='button' data-action='print'>Print / Save report</button><button type='button' data-action='export'>Save JSON</button><label class='file'>Load JSON<input id='import-file' type='file' accept='application/json,.json' hidden></label></div>";
     const reportMount = document.getElementById("live-report");
     if (view === "edit") {
       const holder = document.createElement("section");
@@ -903,7 +1141,8 @@
       const kind = bits[4] === "0" ? " · recurring" : "";
       return "<span style='color:" + (bits[3] || "#f2d48a") + "'>" + esc(bits[1]) + " " + inr(bits[2] || 0) + kind + "</span>";
     });
-    tip.innerHTML = "<b>" + years[index] + "</b> · age " + (ages[index] || "") + "<br>" + series.map(function (line) {
+    const ageBit = ages[index] ? " · age " + ages[index] : "";
+    tip.innerHTML = "<b>" + years[index] + "</b>" + ageBit + "<br>" + series.map(function (line) {
       return "<span style='color:" + line.color + "'>" + esc(line.name) + " " + inr(line.values[index] || 0) + "</span>";
     }).join("<br>") + (goalsDue.length ? "<br>" + goalsDue.join("<br>") : "");
     const left = event.clientX - rect.left + 12;
@@ -915,6 +1154,9 @@
     cursor.setAttribute("x2", cx);
     cursor.setAttribute("visibility", "visible");
   });
+  function isPlan(data) {
+    return !!(data && typeof data.name === "string" && Array.isArray(data.incomes) && Array.isArray(data.assets) && Array.isArray(data.liabilities) && Array.isArray(data.goals));
+  }
   document.getElementById("app").addEventListener("input", function (event) {
     if (event.target.dataset && event.target.dataset.bind) applyInput(event.target);
   });
@@ -933,13 +1175,20 @@
       reader.onload = function () {
         try {
           const data = JSON.parse(String(reader.result));
-          if (!data || typeof data.name !== "string" || !Array.isArray(data.incomes) || !Array.isArray(data.assets) || !Array.isArray(data.liabilities) || !Array.isArray(data.goals)) throw new Error("bad");
-          data.id = uid();
-          ["incomes", "assets", "liabilities", "goals"].forEach(function (key) {
-            data[key].forEach(function (row) { row.id = uid(); });
-          });
-          plans.push(data);
-          activeId = data.id;
+          if (data && Array.isArray(data.plans)) {
+            if (!data.plans.length || data.plans.some(function (item) { return !isPlan(item); })) throw new Error("bad");
+            if (!confirm("Replace the plans in this browser with the ones in this file?")) return;
+            plans = data.plans;
+            activeId = data.plans.some(function (item) { return item.id === data.activeId; }) ? data.activeId : data.plans[0].id;
+            editing = null;
+          } else if (isPlan(data)) {
+            data.id = uid();
+            ["incomes", "assets", "liabilities", "goals"].forEach(function (key) {
+              data[key].forEach(function (row) { row.id = uid(); });
+            });
+            plans.push(data);
+            activeId = data.id;
+          } else throw new Error("bad");
           save();
           render();
         } catch (e) {
@@ -1034,10 +1283,10 @@
       setTimeout(function () { window.print(); }, 50);
     }
     if (action === "export") {
-      const blob = new Blob([JSON.stringify(plan, null, 2)], { type: "application/json" });
+      const blob = new Blob([JSON.stringify({ plans: plans, activeId: activeId }, null, 2)], { type: "application/json" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = (plan.name || "plan").replace(/[^\w\- ]+/g, "") + ".json";
+      a.download = "wealth-plans.json";
       a.click();
       URL.revokeObjectURL(a.href);
     }
